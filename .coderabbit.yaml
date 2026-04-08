@@ -1,13 +1,18 @@
 language: en
-tone: assertive
+early_access: true
 
 reviews:
+  profile: "assertive"
+
   auto_review:
     enabled: true
     drafts: false
     base_branches:
-      - develop
-      - main
+      - "develop"
+    ignore_title_patterns:
+      - "WIP"
+      - "Draft"
+      - "DO NOT MERGE"
 
   high_level_summary: true
   review_status: true
@@ -15,6 +20,7 @@ reviews:
   sequence_diagrams: true
   changed_files_summary: true
   related_issues: true
+  request_changes_workflow: true
 
   path_instructions:
     - path: "src/**/*.rs"
@@ -27,6 +33,7 @@ reviews:
         - No println!/dbg! debug statements
         - Prefer borrowing over ownership
         - Use iterators over manual loops where clearer
+
     - path: "recipes/**/*.toml"
       instructions: |
         Validate recipe structure and ensure all required fields are present.
@@ -38,3 +45,9 @@ reviews:
 
 chat:
   auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+    - "**/CLAUDE.md"
