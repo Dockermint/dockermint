@@ -31,6 +31,7 @@ Closes {LINK TO GH ISSUE}
 - [ ] New dependency is license-compatible
 - [ ] Deny passes (`cargo deny check --all-features`)
 - [ ] Audit passes (`cargo audit`)
+- [ ] Mutation tests pass (`cargo mutants --check`)
 - [ ] All tests pass (`cargo test`)
 - [ ] No compiler warnings (`cargo build`)
 - [ ] Clippy passes (`cargo clippy -- -D warnings`)
