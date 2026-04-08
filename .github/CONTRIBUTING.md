@@ -200,7 +200,7 @@ cargo fmt --check
 cargo build          # on all mandatory toolchains, no warnings
 cargo test
 cargo clippy -- -D warnings
-cargo deny check --all-features
+cargo deny check all
 cargo audit
 cargo mutants --check
 ```

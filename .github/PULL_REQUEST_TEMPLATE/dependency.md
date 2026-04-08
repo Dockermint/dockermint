@@ -29,7 +29,7 @@ Closes {LINK TO GH ISSUE}
 - [ ] All my commits are GPG signed
 - [ ] `CHANGELOG.md` has been updated
 - [ ] New dependency is license-compatible
-- [ ] Deny passes (`cargo deny check --all-features`)
+- [ ] Deny passes (`cargo deny check all`)
 - [ ] Audit passes (`cargo audit`)
 - [ ] Mutation tests pass (`cargo mutants --check`)
 - [ ] All tests pass (`cargo test`)
