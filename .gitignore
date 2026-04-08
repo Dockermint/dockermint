@@ -1,6 +1,5 @@
-# Claude related
+# Claude related (keep CLAUDE.md but ignore the rest)
 .claude/
-CLAUDE.md
 
 # IDE files
 .vscode/
