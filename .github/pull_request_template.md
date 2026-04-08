@@ -37,7 +37,7 @@ Describe the breaking change and the migration path for existing users.
 
 - [ ] All tests pass (`cargo test`)
 - [ ] No compiler warnings (`cargo build`)
-- [ ] Deny passes (`cargo deny check --all-features`)
+- [ ] Deny passes (`cargo deny check all`)
 - [ ] Audit passes (`cargo audit`)
 - [ ] Mutation tests pass (`cargo mutants --check`)
 - [ ] Clippy passes (`cargo clippy -- -D warnings`)
