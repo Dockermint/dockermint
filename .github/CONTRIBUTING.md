@@ -186,10 +186,10 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 Use the appropriate template when creating your PR:
 
 - **Code** (bug fix, feature, breaking, refactor, security): loaded automatically
-- **[Recipe](https://github.com/Dockermint/dockermint/blob/main/.github/PULL_REQUEST_TEMPLATE/recipe.md)**
-- **[Documentation](https://github.com/Dockermint/dockermint/blob/main/.github/PULL_REQUEST_TEMPLATE/documentation.md)**
-- **[Dependency](https://github.com/Dockermint/dockermint/blob/main/.github/PULL_REQUEST_TEMPLATE/dependency.md)**
-- **[Workflow](https://github.com/Dockermint/dockermint/blob/main/.github/PULL_REQUEST_TEMPLATE/workflow.md)**
+- **[Recipe](https://github.com/Dockermint/dockermint/compare/develop...HEAD?quick_pull=1&template=recipe.md)**
+- **[Documentation](https://github.com/Dockermint/dockermint/compare/develop...HEAD?quick_pull=1&template=documentation.md)**
+- **[Dependency](https://github.com/Dockermint/dockermint/compare/develop...HEAD?quick_pull=1&template=dependency.md)**
+- **[Workflow](https://github.com/Dockermint/dockermint/compare/develop...HEAD?quick_pull=1&template=workflow.md)**
 
 ### Before Submitting
 
