@@ -39,6 +39,7 @@ Describe the breaking change and the migration path for existing users.
 - [ ] No compiler warnings (`cargo build`)
 - [ ] Deny passes (`cargo deny check --all-features`)
 - [ ] Audit passes (`cargo audit`)
+- [ ] Mutation tests pass (`cargo mutants --check`)
 - [ ] Clippy passes (`cargo clippy -- -D warnings`)
 - [ ] Code is formatted (`cargo fmt --check`)
 - [ ] All public items have doc comments

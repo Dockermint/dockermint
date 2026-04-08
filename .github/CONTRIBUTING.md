@@ -186,10 +186,10 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 Use the appropriate template when creating your PR:
 
 - **Code** (bug fix, feature, breaking, refactor, security): loaded automatically
-- **[Recipe](../../compare/develop...HEAD?template=recipe.md)**
-- **[Documentation](../../compare/develop...HEAD?template=documentation.md)**
-- **[Dependency](../../compare/develop...HEAD?template=dependency.md)**
-- **[Workflow](../../compare/develop...HEAD?template=workflow.md)**
+- **[Recipe](https://github.com/Dockermint/dockermint/compare/develop...HEAD?quick_pull=1&template=recipe.md)**
+- **[Documentation](https://github.com/Dockermint/dockermint/compare/develop...HEAD?quick_pull=1&template=documentation.md)**
+- **[Dependency](https://github.com/Dockermint/dockermint/compare/develop...HEAD?quick_pull=1&template=dependency.md)**
+- **[Workflow](https://github.com/Dockermint/dockermint/compare/develop...HEAD?quick_pull=1&template=workflow.md)**
 
 ### Before Submitting
 
@@ -202,6 +202,7 @@ cargo test
 cargo clippy -- -D warnings
 cargo deny check --all-features
 cargo audit
+cargo mutants --check
 ```
 
 Also verify:
