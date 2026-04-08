@@ -1,0 +1,20 @@
+[package]
+name = "dockermint"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+description = "The first CI/CD Pipeline for Cosmos SDK."
+documentation = "https://docs.dockermint.io/"
+readme = "README.md"
+homepage = "https://dockermint.io/"
+repository = "https://github.com/Dockermint/dockermint"
+license = "Apache-2.0"
+keywords = ["blockchain", "devops", "docker", "pipeline", "cosmos-sdk"]
+categories = ["command-line-utilities", "virtualization"]
+exclude = [".*", "assets/"]
+publish = false
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]

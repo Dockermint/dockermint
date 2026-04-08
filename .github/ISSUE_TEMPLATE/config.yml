@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: mailto:it@dockermint.io
+    about: Report security vulnerabilities privately via email. Do not open a public issue.
+  - name: Questions & Discussions
+    url: https://github.com/Dockermint/dockermint/discussions
+    about: Ask questions or start a discussion.

@@ -1,0 +1,40 @@
+name: Documentation
+description: Improve or modify documentation.
+title: "[Docs]: "
+labels: ["documentation"]
+type: Task
+body:
+  - type: dropdown
+    id: change-type
+    attributes:
+      label: Change type
+      description: What kind of documentation change?
+      options:
+        - New documentation
+        - Fix or update existing documentation
+        - Remove outdated documentation
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe what needs to be documented or changed.
+    validations:
+      required: true
+  - type: textarea
+    id: location
+    attributes:
+      label: Location
+      description: Which file(s) or section(s) are affected?
+      placeholder: e.g. docs/configuration.md, README.md
+    validations:
+      required: false
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/Dockermint/dockermint/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true

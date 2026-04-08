@@ -1,0 +1,100 @@
+name: Recipe Change
+description: Add or modify a chain recipe.
+title: "[Recipe]: "
+labels: ["recipe"]
+type: Feature
+body:
+  - type: dropdown
+    id: change-type
+    attributes:
+      label: Change type
+      description: Are you adding a new recipe or modifying an existing one?
+      options:
+        - New recipe
+        - Modify existing recipe
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the recipe change and the chain involved.
+    validations:
+      required: true
+  - type: input
+    id: chain-version
+    attributes:
+      label: Chain version
+      description: Tested chain version (semver).
+      placeholder: e.g. 1.2.0
+    validations:
+      required: true
+  - type: input
+    id: cosmos-sdk-version
+    attributes:
+      label: Cosmos SDK version
+      placeholder: e.g. 0.50.9
+    validations:
+      required: true
+  - type: input
+    id: cometbft-version
+    attributes:
+      label: CometBFT version
+      placeholder: e.g. 0.38.12
+    validations:
+      required: true
+  - type: dropdown
+    id: sync-method
+    attributes:
+      label: Sync method
+      description: How was the node synced for testing?
+      multiple: true
+      options:
+        - Genesis
+        - Native snapshot
+        - Custom snapshot
+        - State sync
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Running environment
+      description: OS, CPU, RAM, disk, bandwidth used for testing.
+      placeholder: |
+        OS: Ubuntu 24.04
+        CPU: 8 vCPU
+        RAM: 32 GB
+        Disk: 500 GB NVMe
+        Bandwidth: 1 Gbps
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Sync logs, block height reached, sync duration, or screenshots.
+    validations:
+      required: false
+  - type: checkboxes
+    id: validation
+    attributes:
+      label: Recipe validation
+      description: Confirm the following checks.
+      options:
+        - label: Recipe linted / validated against schema
+          required: true
+        - label: Recipe builds with default flavors in rootless context
+          required: true
+        - label: Node successfully synced with default-flavors-built image
+          required: true
+        - label: No wrong app hash or consensus failure
+          required: true
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/Dockermint/dockermint/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true

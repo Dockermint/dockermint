@@ -1,0 +1,45 @@
+name: Workflow
+description: Add or modify a CI/CD pipeline.
+title: "[Workflow]: "
+labels: ["workflow", "ci/cd"]
+type: Feature
+body:
+  - type: dropdown
+    id: change-type
+    attributes:
+      label: Change type
+      description: Are you adding a new workflow or modifying an existing one?
+      options:
+        - New workflow
+        - Modify existing workflow
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the workflow change.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this change needed?
+    validations:
+      required: true
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Any other context or references.
+    validations:
+      required: false
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/Dockermint/dockermint/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
