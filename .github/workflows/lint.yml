@@ -54,9 +54,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: rustsec/audit-check@v2
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+
+      - run: cargo audit
 
   mutants:
     name: Cargo Mutants
@@ -83,8 +85,9 @@ jobs:
       - name: Run mutation tests on diff
         run: cargo mutants --no-shuffle -vV --in-diff git.diff
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: mutants.out
           path: mutants.out
+          if-no-files-found: ignore
