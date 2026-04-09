@@ -166,9 +166,9 @@ ports = [
 [labels]
 "org.opencontainers.image.created" = "{{CREATION_TIMESTAMP}}"
 "org.opencontainers.image.authors" = "Dockermint CD"
-"org.opencontainers.image.url" = "https://github.com/kyve-network/kyve"
+"org.opencontainers.image.url" = "https://github.com/KYVENetwork/chain"
 "org.opencontainers.image.documentation" = "https://docs.kyve.network"
-"org.opencontainers.image.source" = "https://github.com/kyve-network/kyve"
+"org.opencontainers.image.source" = "https://github.com/KYVENetwork/chain"
 "org.opencontainers.image.version" = "{{repo_version}}"
 "org.opencontainers.image.revision" = "{{repo_commit}}"
 "org.opencontainers.image.vendor" = "KYVE Foundation"
