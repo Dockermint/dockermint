@@ -1,0 +1,184 @@
+# ============================================================================
+# Dockermint Recipe - Kyve (Kyved)
+# ============================================================================
+# Dockermint is a CD pipeline for building standardized Docker images
+# of Cosmos SDK blockchain nodes.
+#
+# Variables syntax:
+#   {{UPPERCASE}}   # Defined by Dockermint from the host
+#   {{lowercase}}   # Defined dynamically during compilation
+#   shell = ""      # Shell execution with output capture
+# ============================================================================
+
+[meta]
+schema_version = 1
+min_dockermint_version = "0.1.0"
+
+[header]
+name = "Kyve"
+repo = "https://github.com/KYVENetwork/chain"
+type = "golang"
+binary_name = "kyved"
+include_patterns = ""
+exclude_patterns = ""
+
+# ============================================================================
+# Available and default flavours
+# ============================================================================
+
+[flavours.available]
+architecture = ["x86_64", "aarch64"]
+db_backend = ["goleveldb", "pebbledb"]
+binary_type = ["dynamic", "static"]
+running_env = ["alpine3.23", "bookworm", "distroless"]
+running_user = ["root", "custom", "dockermint"]
+build_tags = ["netgo", "ledger", "muslc"]
+network = ["mainnet", "kaon"]
+
+[flavours.default]
+architecture = "{{HOST_ARCH}}"
+db_backend = "goleveldb"
+binary_type = "static"
+running_env = "alpine3.23"
+running_user = "root"
+build_tags = ["netgo", "muslc"]
+network = "mainnet"
+
+# ============================================================================
+# Scrapper
+# ============================================================================
+
+[scrapper]
+image = "golang:1.23-alpine3.21"
+install = "apk add --no-cache git"
+env = ["{{GH_USER}}", "{{GH_PAT}}"]
+method = "try-authenticated-clone"
+directory = "{{repository_path}}"
+
+# ============================================================================
+# Build variables
+# ============================================================================
+
+[variables]
+repo_commit = { shell = "git log -1 --format='%H'" }
+repo_version = { shell = "git describe --exact-match 2>/dev/null || echo \"$(git rev-parse --abbrev-ref HEAD)-$(git log -1 --format='%H')\"" }
+golang_version = { shell = "grep -E '^(toolchain|go) ' go.mod | head -1 | sed 's/^toolchain go//;s/^go //'" }
+cometbft_version = { shell = "go list -m github.com/cometbft/cometbft | sed 's:.* ::'" }
+cometbft_db_version = { shell = "go list -m github.com/cometbft/cometbft-db 2>/dev/null | sed 's:.* ::'" }
+cosmos_db_version = { shell = "go list -m github.com/cosmos/cosmos-db 2>/dev/null | sed 's:.* ::'" }
+
+# ============================================================================
+# Profiles
+# ============================================================================
+
+[profiles.network.mainnet]
+denom = "ukyve"
+team_tge = "2023-03-14T14:03:14"
+team_foundation_address = "kyve1xjpl57p7f49y5gueu7rlfytaw9ramcn5zhjy2g"
+team_bcp_address = "kyve1fnh4kghr25tppskap50zk5j385pt65tyyjaraa"
+team_allocation = "165000000000000"
+
+[profiles.network.kaon]
+denom = "tkyve"
+team_tge = "2023-02-07T14:00:00"
+team_foundation_address = "kyve1vut528et85755xsncjwl6dx8xakuv26hxgyv0n"
+team_bcp_address = "kyve1vut528et85755xsncjwl6dx8xakuv26hxgyv0n"
+team_allocation = "165000000000000"
+
+# ============================================================================
+# Builder
+# ============================================================================
+
+[builder.install]
+alpine = "apk add --no-cache alpine-sdk linux-headers"
+ubuntu = "apt-get update && apt-get install -y --no-install-recommends make gcc build-essential linux-headers-generic"
+
+# ============================================================================
+# Build environment
+# ============================================================================
+
+[build.env]
+CGO_ENABLED = "1"
+
+# ============================================================================
+# Go linker configuration
+# ============================================================================
+
+[build.linker.flags]
+dynamic = "-w -s -extldflags '-z noexecstack'"
+static = "-linkmode=external -w -s -extldflags '-Wl,-z,muldefs -static -z noexecstack'"
+
+[build.linker.variables]
+"github.com/cosmos/cosmos-sdk/version.Name" = "kyve"
+"github.com/cosmos/cosmos-sdk/version.AppName" = "{{binary_name}}"
+"github.com/cosmos/cosmos-sdk/version.Version" = "{{repo_version}}"
+"github.com/cosmos/cosmos-sdk/version.Commit" = "{{repo_commit}}"
+"github.com/cosmos/cosmos-sdk/version.BuildTags" = "{{BUILD_TAGS_COMMA_SEP}}"
+"github.com/cometbft/cometbft/version.TMCoreSemVer" = "{{cometbft_version}}"
+"github.com/cosmos/cosmos-sdk/types.DBBackend" = "{{db_backend}}"
+"github.com/KYVENetwork/chain/x/global/types.Denom" = "{{denom}}"
+"github.com/KYVENetwork/chain/x/team/types.TEAM_FOUNDATION_STRING" = "{{team_foundation_address}}"
+"github.com/KYVENetwork/chain/x/team/types.TEAM_BCP_STRING" = "{{team_bcp_address}}"
+"github.com/KYVENetwork/chain/x/team/types.TEAM_ALLOCATION_STRING" = "{{team_allocation}}"
+"github.com/KYVENetwork/chain/x/team/types.TGE_STRING" = "{{team_tge}}"
+
+# ============================================================================
+# Builder other parameters
+# ============================================================================
+
+[build.path]
+path = "{{repository_path}}/cmd/kyved"
+
+# ============================================================================
+# Dockermint user configuration (when running_user == "dockermint")
+# ============================================================================
+
+[user.dockermint]
+username = "dockermint"
+uid = 10000
+gid = 10000
+
+# ============================================================================
+# Files to copy from builder to runner
+# ============================================================================
+
+[copy]
+"/go/bin/kyved" = { dest = "/usr/bin/{{binary_name}}", type = "entrypoint" }
+
+# ============================================================================
+# Default exposed ports
+# ============================================================================
+
+[expose]
+ports = [
+    { port = 26656, description = "P2P" },
+    { port = 26657, description = "RPC" },
+    { port = 26660, description = "Prometheus metrics" },
+    { port = 1317, description = "REST API" },
+    { port = 9090, description = "gRPC" },
+    { port = 9091, description = "gRPC-Web" },
+]
+
+# ============================================================================
+# OCI Labels
+# ============================================================================
+
+[labels]
+"org.opencontainers.image.created" = "{{CREATION_TIMESTAMP}}"
+"org.opencontainers.image.authors" = "Dockermint CD"
+"org.opencontainers.image.url" = "https://github.com/kyve-network/kyve"
+"org.opencontainers.image.documentation" = "https://docs.kyve.network"
+"org.opencontainers.image.source" = "https://github.com/kyve-network/kyve"
+"org.opencontainers.image.version" = "{{repo_version}}"
+"org.opencontainers.image.revision" = "{{repo_commit}}"
+"org.opencontainers.image.vendor" = "KYVE Foundation"
+"org.opencontainers.image.licenses" = "MIT"
+"org.opencontainers.image.title" = "Kyved"
+"org.opencontainers.image.description" = "Kyve Chain Node"
+
+# ============================================================================
+# Docker image tag
+# ============================================================================
+
+[image]
+tag = "kyve-kyved-{{network}}-{{db_backend}}:{{SEMVER_TAG}}-{{running_env}}"

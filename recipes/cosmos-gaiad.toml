@@ -1,0 +1,173 @@
+# ============================================================================
+# Dockermint Recipe - Cosmos Hub (Gaiad)
+# ============================================================================
+# Dockermint is a CD pipeline for building standardized Docker images
+# of Cosmos SDK blockchain nodes.
+#
+# Variables syntax:
+#   {{UPPERCASE}}   # Defined by Dockermint from the host
+#   {{lowercase}}   # Defined dynamically during compilation
+#   shell = ""      # Shell execution with output capture
+# ============================================================================
+
+[meta]
+schema_version = 1
+min_dockermint_version = "0.1.0"
+
+[header]
+name = "Cosmos"
+repo = "https://github.com/cosmos/gaia"
+type = "golang"
+binary_name = "gaiad"
+include_patterns = ""
+exclude_patterns = ""
+
+# ============================================================================
+# Available and default flavours
+# ============================================================================
+
+[flavours.available]
+architecture = ["x86_64", "aarch64"]
+db_backend = ["goleveldb", "pebbledb"]
+binary_type = ["dynamic", "static"]
+running_env = ["alpine3.23", "bookworm", "distroless"]
+running_user = ["root", "custom", "dockermint"]
+build_tags = ["netgo", "ledger", "muslc"]
+
+[flavours.default]
+architecture = "{{HOST_ARCH}}"
+db_backend = "goleveldb"
+binary_type = "static"
+running_env = "alpine3.23"
+running_user = "root"
+build_tags = ["netgo", "muslc"]
+
+# ============================================================================
+# Scrapper
+# ============================================================================
+
+[scrapper]
+image = "golang:1.23-alpine3.21"
+install = "apk add --no-cache git"
+env = ["{{GH_USER}}", "{{GH_PAT}}"]
+method = "try-authenticated-clone"
+directory = "{{repository_path}}"
+
+# ============================================================================
+# Build variables
+# ============================================================================
+
+[variables]
+repo_commit = { shell = "git log -1 --format='%H'" }
+repo_version = { shell = "git describe --exact-match 2>/dev/null || echo \"$(git rev-parse --abbrev-ref HEAD)-$(git log -1 --format='%H')\"" }
+golang_version = { shell = "grep -E '^(toolchain|go) ' go.mod | head -1 | sed 's/^toolchain go//;s/^go //'" }
+wasmvm_version = { shell = "go list -m github.com/CosmWasm/wasmvm/v2 2>/dev/null | sed 's:.* ::'" }
+cometbft_version = { shell = "go list -m github.com/cometbft/cometbft | sed 's:.* ::'" }
+cometbft_db_version = { shell = "go list -m github.com/cometbft/cometbft-db 2>/dev/null | sed 's:.* ::'" }
+cosmos_db_version = { shell = "go list -m github.com/cosmos/cosmos-db 2>/dev/null | sed 's:.* ::'" }
+
+# ============================================================================
+# Builder
+# ============================================================================
+
+[builder.install]
+alpine = "apk add --no-cache alpine-sdk linux-headers"
+ubuntu = "apt-get update && apt-get install -y --no-install-recommends make gcc build-essential linux-headers-generic"
+
+# ============================================================================
+# Conditional pre-build steps
+# ============================================================================
+
+[[pre_build]]
+condition = "static"
+instruction = "ADD"
+source = "https://github.com/CosmWasm/wasmvm/releases/download/{{wasmvm_version}}/libwasmvm_muslc.{{HOST_ARCH}}.a"
+dest = "/lib/libwasmvm_muslc.{{HOST_ARCH}}.a"
+
+# ============================================================================
+# Build environment variables
+# ============================================================================
+
+[build.env]
+CGO_ENABLED = "1"
+
+# ============================================================================
+# Go linker configuration
+# ============================================================================
+
+[build.linker.flags]
+dynamic = "-w -s -extldflags '-z noexecstack'"
+static = "-linkmode=external -w -s -extldflags '-Wl,-z,muldefs -static -z noexecstack'"
+
+[build.linker.variables]
+"github.com/cosmos/cosmos-sdk/version.Name" = "gaia"
+"github.com/cosmos/cosmos-sdk/version.AppName" = "{{binary_name}}"
+"github.com/cosmos/cosmos-sdk/version.Version" = "{{repo_version}}"
+"github.com/cosmos/cosmos-sdk/version.Commit" = "{{repo_commit}}"
+"github.com/cosmos/cosmos-sdk/version.BuildTags" = "{{BUILD_TAGS_COMMA_SEP}}"
+"github.com/cometbft/cometbft/version.TMCoreSemVer" = "{{cometbft_version}}"
+"github.com/cosmos/cosmos-sdk/types.DBBackend" = "{{db_backend}}"
+
+# ============================================================================
+# Builder other parameters
+# ============================================================================
+
+[build.path]
+path = "{{repository_path}}/cmd/gaiad"
+
+# ============================================================================
+# Dockermint user configuration (when running_user == "dockermint")
+# ============================================================================
+
+[user.dockermint]
+username = "dockermint"
+uid = 10000
+gid = 10000
+
+# ============================================================================
+# Files to copy from builder to runner
+# ============================================================================
+
+[copy]
+"/go/bin/gaiad" = { dest = "/usr/bin/{{binary_name}}", type = "entrypoint" }
+
+[copy.dynamic]
+"/go/pkg/mod/github.com/!cosm!wasm/wasmvm/v2@{{wasmvm_version}}/internal/api/libwasmvm.{{HOST_ARCH}}.so" = { dest = "/lib/libwasmvm.{{HOST_ARCH}}.so", type = "dyn-library" }
+
+# ============================================================================
+# Default exposed ports
+# ============================================================================
+
+[expose]
+ports = [
+    { port = 26656, description = "P2P" },
+    { port = 26657, description = "RPC" },
+    { port = 26660, description = "Prometheus metrics" },
+    { port = 1317, description = "REST API" },
+    { port = 9090, description = "gRPC" },
+    { port = 9091, description = "gRPC-Web" },
+]
+
+# ============================================================================
+# OCI Labels
+# ============================================================================
+
+[labels]
+"org.opencontainers.image.created" = "{{CREATION_TIMESTAMP}}"
+"org.opencontainers.image.authors" = "Dockermint CD"
+"org.opencontainers.image.url" = "https://github.com/cosmos/gaia"
+"org.opencontainers.image.documentation" = "https://docs.cosmos.network/hub"
+"org.opencontainers.image.source" = "https://github.com/cosmos/gaia"
+"org.opencontainers.image.version" = "{{repo_version}}"
+"org.opencontainers.image.revision" = "{{repo_commit}}"
+"org.opencontainers.image.vendor" = "the Gaia authors"
+"org.opencontainers.image.licenses" = "Apache-2.0"
+"org.opencontainers.image.title" = "Gaiad"
+"org.opencontainers.image.description" = "Cosmos Hub Node"
+
+# ============================================================================
+# Docker image tag
+# ============================================================================
+
+[image]
+tag = "cosmos-gaiad-{{db_backend}}:{{SEMVER_TAG}}-{{running_env}}"
