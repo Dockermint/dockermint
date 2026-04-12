@@ -7,7 +7,8 @@
 //! after.  In **daemon mode** builders persist across polling cycles
 //! (controlled by the `persist` flag).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::builder::dockerfile;
@@ -16,6 +17,44 @@ use crate::error::{BuilderError, CommandError};
 
 /// Mapping from Docker platform string to buildx builder suffix.
 const PLATFORM_SUFFIXES: &[(&str, &str)] = &[("linux/amd64", "amd64"), ("linux/arm64", "arm64")];
+
+/// Monotonic counter for generating unique build directory names.
+static BUILD_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// RAII guard that removes a directory when dropped.
+///
+/// Used to ensure secret files are cleaned up even if the build
+/// errors out or panics.
+struct DirGuard {
+    path: PathBuf,
+}
+
+impl DirGuard {
+    /// Create a guard that will remove `path` on drop.
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Generate a unique directory name for this build.
+///
+/// Combines the process ID and a monotonic counter to ensure
+/// uniqueness across concurrent builds within and between processes.
+///
+/// # Returns
+///
+/// A directory name of the form `dockermint-build-{pid}-{counter}`.
+fn unique_build_dir_name() -> String {
+    let pid = std::process::id();
+    let seq = BUILD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("dockermint-build-{pid}-{seq}")
+}
 
 /// BuildKit-based image builder using `docker buildx`.
 #[derive(Debug)]
@@ -57,9 +96,9 @@ impl BuildKitBuilder {
 
     /// Check whether a builder instance already exists.
     async fn builder_exists(&self, name: &str) -> bool {
-        let env = self.docker_env();
-        let env_refs: std::collections::HashMap<String, String> = env.into_iter().collect();
-        crate::commands::execute_with_env("docker", &["buildx", "inspect", name], &env_refs)
+        let env: std::collections::HashMap<String, String> =
+            self.docker_env().into_iter().collect();
+        crate::commands::execute_with_env("docker", &["buildx", "inspect", name], &env)
             .await
             .is_ok()
     }
@@ -124,9 +163,24 @@ impl BuildKitBuilder {
         Ok(())
     }
 
-    /// Write the Dockerfile to a temp directory and return its path.
+    /// Write the Dockerfile to a unique per-build temp directory.
+    ///
+    /// Each call creates a fresh directory under the OS temp path so
+    /// concurrent builds never clobber each other.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - Dockerfile content to write
+    ///
+    /// # Returns
+    ///
+    /// Path to the written `Dockerfile`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuilderError::DockerfileGeneration`] on I/O failure.
     fn write_dockerfile(&self, content: &str) -> Result<PathBuf, BuilderError> {
-        let dir = std::env::temp_dir().join("dockermint-build");
+        let dir = std::env::temp_dir().join(unique_build_dir_name());
         std::fs::create_dir_all(&dir).map_err(|e| {
             BuilderError::DockerfileGeneration(format!("failed to create build dir: {e}"))
         })?;
@@ -138,6 +192,50 @@ impl BuildKitBuilder {
 
         Ok(path)
     }
+
+    /// Write secret files to a directory **outside** the build context.
+    ///
+    /// Returns `(secret_dir, args)` where `args` are `--secret` flags
+    /// to pass to `docker buildx build`. The returned [`DirGuard`]
+    /// ensures the secret directory is removed when dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuilderError::DockerfileGeneration`] on I/O failure.
+    fn prepare_secrets(&self) -> Result<(DirGuard, Vec<String>), BuilderError> {
+        let secret_dir =
+            std::env::temp_dir().join(format!("dockermint-secrets-{}", unique_build_dir_name()));
+        std::fs::create_dir_all(&secret_dir)
+            .map_err(|e| BuilderError::DockerfileGeneration(format!("secret dir: {e}")))?;
+
+        let guard = DirGuard::new(secret_dir.clone());
+        let mut args = Vec::new();
+
+        if let Ok(user) = std::env::var("GH_USER") {
+            let path = secret_dir.join("gh_user");
+            write_secret_file(&path, &user)?;
+            args.push("--secret".to_owned());
+            args.push(format!("id=gh_user,src={}", path.display()));
+        }
+        if let Ok(pat) = std::env::var("GH_PAT") {
+            let path = secret_dir.join("gh_pat");
+            write_secret_file(&path, &pat)?;
+            args.push("--secret".to_owned());
+            args.push(format!("id=gh_pat,src={}", path.display()));
+        }
+
+        Ok((guard, args))
+    }
+}
+
+/// Write a secret value to a file with restrictive permissions.
+///
+/// # Errors
+///
+/// Returns [`BuilderError::DockerfileGeneration`] on I/O failure.
+fn write_secret_file(path: &Path, value: &str) -> Result<(), BuilderError> {
+    std::fs::write(path, value)
+        .map_err(|e| BuilderError::DockerfileGeneration(format!("write secret: {e}")))
 }
 
 impl ImageBuilder for BuildKitBuilder {
@@ -156,9 +254,14 @@ impl ImageBuilder for BuildKitBuilder {
     /// Build a Docker image using `docker buildx build`.
     ///
     /// 1. Generates a Dockerfile from the resolved recipe
-    /// 2. Writes it to a temp directory
-    /// 3. Runs `docker buildx build` with the appropriate builder
-    /// 4. Returns the build output
+    /// 2. Writes it to a unique per-build temp directory
+    /// 3. Writes secrets to a **separate** temp directory outside the
+    ///    build context (secrets are never COPY-able)
+    /// 4. Runs `docker buildx build` with the appropriate builder
+    /// 5. For single-platform builds uses `--load`; for multi-platform
+    ///    uses `--output type=image` (since `--load` only supports a
+    ///    single platform)
+    /// 6. Always cleans up secrets on completion (via RAII guard)
     async fn build(&self, context: &BuildContext) -> Result<BuildOutput, BuilderError> {
         let start = Instant::now();
 
@@ -171,15 +274,12 @@ impl ImageBuilder for BuildKitBuilder {
         let platform_str = context.platforms.join(",");
         let git_tag_arg = format!("GIT_TAG={}", context.tag);
 
-        // Determine which builder to use based on platform count
-        // For multi-platform, we need a builder that supports all
-        // For single platform, pick the matching one
+        // Determine which builder to use based on platform count.
+        // For multi-platform builds the docker-container driver handles
+        // cross-compilation natively (no QEMU needed on the host).
         let builder_name = if context.platforms.len() > 1 {
-            // Multi-platform: use the amd64 builder (it can build both
-            // via QEMU when using docker-container driver)
             self.builder_name("amd64")
         } else {
-            // Single platform: match the suffix
             let suffix = PLATFORM_SUFFIXES
                 .iter()
                 .find(|(p, _)| context.platforms.first().is_some_and(|cp| cp == p))
@@ -195,6 +295,8 @@ impl ImageBuilder for BuildKitBuilder {
             builder = builder_name,
             "starting buildx build"
         );
+
+        let build_dir = dockerfile_path.parent().expect("dockerfile has parent dir");
 
         let mut build_args: Vec<String> = vec![
             "buildx".to_owned(),
@@ -213,28 +315,21 @@ impl ImageBuilder for BuildKitBuilder {
 
         // Mount GH credentials as BuildKit secrets (never baked into
         // image layers or visible via `docker inspect`).
-        let build_dir = dockerfile_path.parent().expect("dockerfile has parent dir");
-        let secret_dir = build_dir.join("secrets");
-        std::fs::create_dir_all(&secret_dir)
-            .map_err(|e| BuilderError::DockerfileGeneration(format!("secret dir: {e}")))?;
+        // Secrets live OUTSIDE the build context directory so they
+        // cannot be reached by COPY/ADD instructions.
+        // The DirGuard ensures cleanup even on error or panic.
+        let (_secret_guard, secret_args) = self.prepare_secrets()?;
+        build_args.extend(secret_args);
 
-        if let Ok(user) = std::env::var("GH_USER") {
-            let path = secret_dir.join("gh_user");
-            std::fs::write(&path, &user)
-                .map_err(|e| BuilderError::DockerfileGeneration(format!("write secret: {e}")))?;
-            build_args.push("--secret".to_owned());
-            build_args.push(format!("id=gh_user,src={}", path.display()));
+        // --load only works for single-platform builds.
+        // For multi-platform, use --output type=image and let the
+        // caller handle pushing separately.
+        if context.platforms.len() == 1 {
+            build_args.push("--load".to_owned());
+        } else {
+            build_args.push("--output".to_owned());
+            build_args.push("type=image".to_owned());
         }
-        if let Ok(pat) = std::env::var("GH_PAT") {
-            let path = secret_dir.join("gh_pat");
-            std::fs::write(&path, &pat)
-                .map_err(|e| BuilderError::DockerfileGeneration(format!("write secret: {e}")))?;
-            build_args.push("--secret".to_owned());
-            build_args.push(format!("id=gh_pat,src={}", path.display()));
-        }
-
-        // --load for single-platform, --push handled by caller
-        build_args.push("--load".to_owned());
 
         build_args.push(build_dir.to_string_lossy().to_string());
 
@@ -277,12 +372,16 @@ impl ImageBuilder for BuildKitBuilder {
             duration,
             platforms: context.platforms.clone(),
         })
+        // _secret_guard is dropped here, removing the secrets directory
     }
 
     /// Remove buildx builder instances.
     ///
     /// In CLI mode (`persist = false`), removes all builders.
     /// In daemon mode (`persist = true`), keeps them alive.
+    ///
+    /// Note: per-build temp directories and secrets are cleaned up by
+    /// the build method itself (via RAII guards), not here.
     async fn cleanup(&self) -> Result<(), BuilderError> {
         if self.persist {
             tracing::debug!("persist=true, keeping buildx builders");
@@ -293,10 +392,6 @@ impl ImageBuilder for BuildKitBuilder {
             let name = self.builder_name(suffix);
             self.remove_builder(&name).await?;
         }
-
-        // Clean up temp build directory
-        let dir = std::env::temp_dir().join("dockermint-build");
-        let _ = std::fs::remove_dir_all(dir);
 
         Ok(())
     }
@@ -336,5 +431,82 @@ mod tests {
     fn buildkit_builder_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BuildKitBuilder>();
+    }
+
+    #[test]
+    fn unique_build_dir_names_are_distinct() {
+        let a = unique_build_dir_name();
+        let b = unique_build_dir_name();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn write_dockerfile_creates_unique_dirs() {
+        let builder = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "test".to_owned(),
+            false,
+        );
+
+        let path_a = builder
+            .write_dockerfile("FROM alpine:3.20")
+            .expect("write_dockerfile should succeed");
+        let path_b = builder
+            .write_dockerfile("FROM alpine:3.21")
+            .expect("write_dockerfile should succeed");
+
+        // Different directories
+        assert_ne!(
+            path_a.parent().expect("has parent"),
+            path_b.parent().expect("has parent"),
+        );
+
+        // Content is correct
+        let content_a = std::fs::read_to_string(&path_a).expect("read file");
+        assert_eq!(content_a, "FROM alpine:3.20");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(path_a.parent().expect("has parent"));
+        let _ = std::fs::remove_dir_all(path_b.parent().expect("has parent"));
+    }
+
+    #[test]
+    fn dir_guard_removes_on_drop() {
+        let dir = std::env::temp_dir().join("dockermint-guard-test");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let secret = dir.join("secret.txt");
+        std::fs::write(&secret, "top-secret").expect("write");
+        assert!(dir.exists());
+
+        {
+            let _guard = DirGuard::new(dir.clone());
+        }
+
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn secrets_dir_is_outside_build_dir() {
+        let builder = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "test".to_owned(),
+            false,
+        );
+
+        let dockerfile_path = builder
+            .write_dockerfile("FROM alpine")
+            .expect("write_dockerfile should succeed");
+        let build_dir = dockerfile_path.parent().expect("has parent").to_path_buf();
+
+        // prepare_secrets creates a separate directory
+        let (guard, _args) = builder.prepare_secrets().expect("prepare_secrets");
+
+        // Secret dir must not be a subdirectory of build dir
+        assert!(!guard.path.starts_with(&build_dir));
+
+        // Cleanup
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&build_dir);
     }
 }

@@ -48,9 +48,22 @@ impl RegistryClient for OciRegistry {
         let user = std::env::var("REGISTRY_USER");
         let password = std::env::var("REGISTRY_PASSWORD");
 
-        let (Ok(user), Ok(password)) = (user, password) else {
-            tracing::debug!("no registry credentials, skipping login");
-            return Ok(());
+        let (user, password) = match (user, password) {
+            (Ok(u), Ok(p)) => (u, p),
+            (Err(_), Err(_)) => {
+                tracing::debug!("no registry credentials, skipping login");
+                return Ok(());
+            },
+            (Ok(_), Err(_)) => {
+                return Err(RegistryError::Auth(
+                    "both REGISTRY_USER and REGISTRY_PASSWORD must be set".to_owned(),
+                ));
+            },
+            (Err(_), Ok(_)) => {
+                return Err(RegistryError::Auth(
+                    "both REGISTRY_USER and REGISTRY_PASSWORD must be set".to_owned(),
+                ));
+            },
         };
 
         let registry_arg = self.registry_url.as_deref().unwrap_or("");
@@ -137,19 +150,39 @@ impl RegistryClient for OciRegistry {
         let full_ref = format!("{image}:{tag}");
         let env = self.docker_env();
 
-        // execute_with_env returns Err on non-zero, but we want to
-        // distinguish "not found" (non-zero) from "network error"
-        // (spawn failure).  Use a raw Command instead.
         let output = tokio::process::Command::new("docker")
             .args(["manifest", "inspect", &full_ref])
             .envs(&env)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+            .stderr(std::process::Stdio::piped())
+            .output()
             .await
             .map_err(|e| RegistryError::Query(format!("spawn: {e}")))?;
 
-        Ok(output.success())
+        if output.status.success() {
+            return Ok(true);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_lower = stderr.to_lowercase();
+
+        let is_infrastructure_error = stderr_lower.contains("unauthorized")
+            || stderr_lower.contains("authentication")
+            || stderr_lower.contains("denied")
+            || stderr_lower.contains("dns")
+            || stderr_lower.contains("timeout")
+            || stderr_lower.contains("connection refused")
+            || stderr_lower.contains("network");
+
+        if is_infrastructure_error {
+            return Err(RegistryError::Query(format!(
+                "manifest inspect for '{}' failed: {}",
+                full_ref,
+                stderr.trim()
+            )));
+        }
+
+        Ok(false)
     }
 }
 
@@ -176,5 +209,67 @@ mod tests {
     fn new_default_registry() {
         let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
         assert!(r.registry_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn authenticate_errors_when_only_user_set() {
+        let _guard_user = EnvGuard::set("REGISTRY_USER", "alice");
+        let _guard_pass = EnvGuard::remove("REGISTRY_PASSWORD");
+
+        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
+        let err = r.authenticate().await.unwrap_err();
+        assert!(
+            matches!(err, RegistryError::Auth(ref msg) if msg.contains("both")),
+            "expected Auth error about both vars, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticate_errors_when_only_password_set() {
+        let _guard_user = EnvGuard::remove("REGISTRY_USER");
+        let _guard_pass = EnvGuard::set("REGISTRY_PASSWORD", "secret");
+
+        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
+        let err = r.authenticate().await.unwrap_err();
+        assert!(
+            matches!(err, RegistryError::Auth(ref msg) if msg.contains("both")),
+            "expected Auth error about both vars, got: {err:?}"
+        );
+    }
+
+    /// RAII guard that sets an env var and restores the original value
+    /// on drop.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: Tests using EnvGuard run serially (single-threaded
+            // test runner) so no concurrent env access occurs.
+            unsafe { std::env::set_var(key, val) };
+            Self { key, prev }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: Tests using EnvGuard run serially (single-threaded
+            // test runner) so no concurrent env access occurs.
+            unsafe { std::env::remove_var(key) };
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: Tests using EnvGuard run serially (single-threaded
+            // test runner) so no concurrent env access occurs.
+            match &self.prev {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
     }
 }

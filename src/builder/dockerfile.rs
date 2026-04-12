@@ -190,7 +190,12 @@ pub fn generate(recipe: &ResolvedRecipe) -> Result<String, BuilderError> {
     if running_user != "root"
         && let Some(user_cfg) = recipe.recipe.user.get(running_user)
     {
-        df.user(&user_cfg.username);
+        // Distroless images have no /etc/passwd, so we must use numeric UID
+        if running_env.contains("distroless") {
+            df.user(&user_cfg.uid.to_string());
+        } else {
+            df.user(&user_cfg.username);
+        }
         df.blank();
     }
 
@@ -459,6 +464,45 @@ mod tests {
             strip_protocol("https://github.com/cosmos/gaia"),
             "github.com/cosmos/gaia"
         );
+    }
+
+    #[test]
+    fn user_creation_command_returns_none_for_distroless() {
+        let cfg = crate::recipe::types::UserConfig {
+            username: "cosmos".to_owned(),
+            uid: 1000,
+            gid: 1000,
+        };
+        assert_eq!(user_creation_command("distroless", &cfg), None);
+        assert_eq!(
+            user_creation_command("gcr.io/distroless/static", &cfg),
+            None
+        );
+    }
+
+    #[test]
+    fn user_creation_command_alpine() {
+        let cfg = crate::recipe::types::UserConfig {
+            username: "cosmos".to_owned(),
+            uid: 1000,
+            gid: 1000,
+        };
+        let cmd = user_creation_command("alpine3.23", &cfg).expect("should produce command");
+        assert!(cmd.contains("addgroup"), "uses alpine addgroup");
+        assert!(cmd.contains("adduser"), "uses alpine adduser");
+        assert!(cmd.contains("1000"), "includes uid");
+    }
+
+    #[test]
+    fn user_creation_command_debian() {
+        let cfg = crate::recipe::types::UserConfig {
+            username: "cosmos".to_owned(),
+            uid: 1000,
+            gid: 1000,
+        };
+        let cmd = user_creation_command("bookworm", &cfg).expect("should produce command");
+        assert!(cmd.contains("groupadd"), "uses debian groupadd");
+        assert!(cmd.contains("useradd"), "uses debian useradd");
     }
 
     #[test]

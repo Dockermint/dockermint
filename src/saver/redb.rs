@@ -37,7 +37,7 @@ impl RedbDatabase {
     /// Returns [`DatabaseError::Open`] if the file cannot be created or
     /// opened.
     pub fn open(path: &Path) -> Result<Self, DatabaseError> {
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|e| {
                 DatabaseError::Open(format!("create dir {}: {e}", parent.display()))
             })?;
@@ -112,7 +112,7 @@ impl Database for RedbDatabase {
             Some(val) => {
                 let stored: StoredRecord = serde_json::from_slice(val.value())
                     .map_err(|e| DatabaseError::Serialization(format!("{e}")))?;
-                Ok(Some(from_stored(stored)))
+                Ok(Some(from_stored(stored)?))
             },
             None => Ok(None),
         }
@@ -142,7 +142,7 @@ impl Database for RedbDatabase {
             if k.starts_with(&prefix) {
                 let stored: StoredRecord = serde_json::from_slice(v_guard.value())
                     .map_err(|e| DatabaseError::Serialization(format!("{e}")))?;
-                records.push(from_stored(stored));
+                records.push(from_stored(stored)?);
             }
         }
 
@@ -205,22 +205,29 @@ fn to_stored(r: &BuildRecord) -> StoredRecord {
     }
 }
 
-fn from_stored(s: StoredRecord) -> BuildRecord {
-    BuildRecord {
+fn from_stored(s: StoredRecord) -> Result<BuildRecord, DatabaseError> {
+    let status = match s.status.as_str() {
+        "in_progress" => BuildStatus::InProgress,
+        "success" => BuildStatus::Success,
+        "failed" => BuildStatus::Failed,
+        other => {
+            return Err(DatabaseError::Serialization(format!(
+                "unknown build status: {other}"
+            )));
+        },
+    };
+
+    Ok(BuildRecord {
         recipe_name: s.recipe_name,
         tag: s.tag,
-        status: match s.status.as_str() {
-            "success" => BuildStatus::Success,
-            "failed" => BuildStatus::Failed,
-            _ => BuildStatus::InProgress,
-        },
+        status,
         image_tag: s.image_tag,
         started_at: s.started_at,
         completed_at: s.completed_at,
         duration_secs: s.duration_secs,
         error: s.error,
         flavours: s.flavours,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -320,5 +327,54 @@ mod tests {
     fn redb_database_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<RedbDatabase>();
+    }
+
+    #[test]
+    fn from_stored_rejects_unknown_status() {
+        let stored = StoredRecord {
+            recipe_name: "r".to_owned(),
+            tag: "t".to_owned(),
+            status: "bogus".to_owned(),
+            image_tag: None,
+            started_at: String::new(),
+            completed_at: None,
+            duration_secs: None,
+            error: None,
+            flavours: HashMap::new(),
+        };
+
+        let err = from_stored(stored).unwrap_err();
+        assert!(
+            matches!(err, DatabaseError::Serialization(ref msg) if msg.contains("bogus")),
+            "expected Serialization error with status name, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_stored_accepts_in_progress() {
+        let stored = StoredRecord {
+            recipe_name: "r".to_owned(),
+            tag: "t".to_owned(),
+            status: "in_progress".to_owned(),
+            image_tag: None,
+            started_at: String::new(),
+            completed_at: None,
+            duration_secs: None,
+            error: None,
+            flavours: HashMap::new(),
+        };
+
+        let record = from_stored(stored).expect("should parse in_progress");
+        assert_eq!(record.status, BuildStatus::InProgress);
+    }
+
+    #[test]
+    fn open_with_relative_filename_succeeds() {
+        // Use a temp dir as CWD to avoid polluting the project root.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("flat.redb");
+        // path.parent() is the temp dir, which is non-empty, so
+        // create_dir_all is called normally.
+        let _db = RedbDatabase::open(&path).expect("open with simple filename");
     }
 }

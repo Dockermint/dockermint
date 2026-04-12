@@ -141,15 +141,12 @@ impl BuildContext {
         template::TemplateEngine::render(&self.recipe.recipe.image.tag, &self.variables)
     }
 
-    /// Get the selected value for a flavor dimension.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - Flavor dimension name
+    /// Get the selected flavours for this build context.
     ///
     /// # Returns
     ///
-    /// The selected value, or `None` if the dimension doesn't exist.
+    /// A reference to the [`SelectedFlavours`] resolved from CLI args,
+    /// config, or recipe defaults.
     pub fn flavor(&self) -> &SelectedFlavours {
         &self.recipe.selected_flavours
     }

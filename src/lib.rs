@@ -266,14 +266,25 @@ pub async fn run_daemon(config: Config, args: DaemonArgs) -> Result<(), Error> {
         "daemon starting"
     );
 
-    // 7. Poll loop with graceful shutdown
+    // 7. Poll loop with graceful shutdown (SIGINT + SIGTERM)
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
+
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "failed to register SIGTERM handler: {e}"
+            )))
+        })?;
 
     loop {
         tokio::select! {
             _ = &mut shutdown => {
-                tracing::info!("shutdown signal received");
+                tracing::info!("SIGINT received, shutting down");
+                break;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM received, shutting down");
                 break;
             }
             _ = daemon_cycle(
@@ -291,7 +302,11 @@ pub async fn run_daemon(config: Config, args: DaemonArgs) -> Result<(), Error> {
         // Sleep between cycles
         tokio::select! {
             _ = &mut shutdown => {
-                tracing::info!("shutdown signal received");
+                tracing::info!("SIGINT received, shutting down");
+                break;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM received, shutting down");
                 break;
             }
             _ = tokio::time::sleep(
@@ -329,6 +344,9 @@ fn init_notifier(config: &Config) -> Option<notifier::telegram::TelegramNotifier
 }
 
 /// Execute one polling cycle across all recipes.
+///
+/// The `max_builds` budget is shared across all recipes in a single
+/// cycle, preventing one cycle from exceeding the configured limit.
 #[allow(clippy::too_many_arguments)]
 async fn daemon_cycle(
     config: &Config,
@@ -349,7 +367,14 @@ async fn daemon_cycle(
         },
     };
 
+    let mut remaining_budget = max_builds;
+
     for (recipe_stem, raw_recipe) in &recipes {
+        if remaining_budget == 0 {
+            tracing::debug!("build budget exhausted for this cycle");
+            break;
+        }
+
         // Apply recipe filter if specified
         if !recipe_filter.is_empty() && !recipe_filter.contains(recipe_stem) {
             continue;
@@ -362,7 +387,7 @@ async fn daemon_cycle(
             vcs_client,
             registry,
             notifier,
-            max_builds,
+            &mut remaining_budget,
             recipe_stem,
             raw_recipe,
         )
@@ -378,6 +403,9 @@ async fn daemon_cycle(
 }
 
 /// Process a single recipe: fetch releases, filter, build new tags.
+///
+/// `remaining_budget` is decremented after each build. When it reaches
+/// zero, no more tags are built (across all recipes in the cycle).
 #[allow(clippy::too_many_arguments)]
 async fn process_recipe(
     config: &Config,
@@ -386,7 +414,7 @@ async fn process_recipe(
     vcs_client: &scrapper::github::GithubClient,
     registry: &OciRegistry,
     notifier: Option<&notifier::telegram::TelegramNotifier>,
-    max_builds: u32,
+    remaining_budget: &mut u32,
     recipe_stem: &str,
     raw_recipe: &recipe::types::Recipe,
 ) -> Result<(), Error> {
@@ -411,7 +439,7 @@ async fn process_recipe(
     // Filter out already-built or failed tags
     let mut to_build = Vec::new();
     for release in &releases {
-        if to_build.len() >= max_builds as usize {
+        if to_build.len() >= *remaining_budget as usize {
             break;
         }
 
@@ -466,6 +494,10 @@ async fn process_recipe(
             tag,
         )
         .await;
+        *remaining_budget = remaining_budget.saturating_sub(1);
+        if *remaining_budget == 0 {
+            break;
+        }
     }
 
     Ok(())

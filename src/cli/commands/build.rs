@@ -61,7 +61,7 @@ fn parse_flavor(s: &str) -> Result<(String, FlavorValue), String> {
     let value = if value.contains(',') {
         FlavorValue::Multiple(value.split(',').map(|v| v.trim().to_owned()).collect())
     } else {
-        FlavorValue::Single(value.to_owned())
+        FlavorValue::Single(value.trim().to_owned())
     };
 
     Ok((key.to_owned(), value))
@@ -86,6 +86,13 @@ mod tests {
             v,
             FlavorValue::Multiple(vec!["netgo".to_owned(), "muslc".to_owned(),])
         );
+    }
+
+    #[test]
+    fn parse_single_flavor_trims_whitespace() {
+        let (k, v) = parse_flavor("db_backend= pebbledb ").unwrap();
+        assert_eq!(k, "db_backend");
+        assert_eq!(v, FlavorValue::Single("pebbledb".to_owned()));
     }
 
     #[test]

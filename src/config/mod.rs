@@ -78,7 +78,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         )));
     }
 
-    if !config.recipes_dir.is_relative() && !config.recipes_dir.exists() {
+    if !config.recipes_dir.exists() {
         return Err(ConfigError::Invalid(format!(
             "recipes directory does not exist: {}",
             config.recipes_dir.display()
@@ -194,6 +194,20 @@ mod tests {
             version = 1
             [daemon]
             poll_interval_secs = 0
+        "#;
+        let config: Config = toml::from_str(raw).expect("parse");
+        let err = validate(&config).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::Invalid(_)),
+            "expected Invalid, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_nonexistent_relative_recipes_dir() {
+        let raw = r#"
+            version = 1
+            recipes_dir = "nonexistent_dir_abc123"
         "#;
         let config: Config = toml::from_str(raw).expect("parse");
         let err = validate(&config).unwrap_err();

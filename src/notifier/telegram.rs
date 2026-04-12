@@ -68,7 +68,8 @@ impl TelegramNotifier {
     /// Send a text message to the configured chat.
     async fn send(&self, text: &str) -> Result<(), NotifierError> {
         let truncated = if text.len() > MAX_MESSAGE_LEN {
-            &text[..MAX_MESSAGE_LEN]
+            let boundary = text.floor_char_boundary(MAX_MESSAGE_LEN);
+            &text[..boundary]
         } else {
             text
         };
@@ -163,5 +164,27 @@ mod tests {
     fn telegram_notifier_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<TelegramNotifier>();
+    }
+
+    #[test]
+    fn truncate_respects_char_boundary() {
+        // Build a string that is exactly MAX_MESSAGE_LEN + 2 bytes long,
+        // with a multi-byte character straddling the boundary.
+        // '\u{00e9}' (e-acute) is 2 bytes in UTF-8.
+        let filler_len = MAX_MESSAGE_LEN - 1;
+        let mut text = "a".repeat(filler_len);
+        // This 2-byte char starts at byte filler_len, so byte
+        // MAX_MESSAGE_LEN falls in the middle of it.
+        text.push('\u{00e9}');
+        text.push('z');
+        assert!(text.len() > MAX_MESSAGE_LEN);
+
+        // Replicate the truncation logic from `send`.
+        let boundary = text.floor_char_boundary(MAX_MESSAGE_LEN);
+        let truncated = &text[..boundary];
+
+        // Must be valid UTF-8 and at most MAX_MESSAGE_LEN bytes.
+        assert!(truncated.len() <= MAX_MESSAGE_LEN);
+        assert!(truncated.is_char_boundary(truncated.len()));
     }
 }

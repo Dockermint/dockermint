@@ -47,47 +47,33 @@ impl TemplateEngine {
     /// ```
     pub fn render(template: &str, vars: &HashMap<String, String>) -> String {
         let mut result = String::with_capacity(template.len());
+        let mut rest = template;
 
-        let bytes = template.as_bytes();
-        let len = bytes.len();
-        let mut i = 0;
+        while let Some(open) = rest.find("{{") {
+            // Emit everything before the opening braces.
+            result.push_str(&rest[..open]);
 
-        while i < len {
-            if i + 1 < len && bytes[i] == b'{' && bytes[i + 1] == b'{' {
-                i += 2; // skip "{{"
-                let key_start = i;
-                let mut closed = false;
-
-                while i + 1 < len {
-                    if bytes[i] == b'}' && bytes[i + 1] == b'}' {
-                        closed = true;
-                        break;
-                    }
-                    i += 1;
-                }
-
-                let key = &template[key_start..i];
-
-                if closed {
-                    i += 2; // skip "}}"
-                    if let Some(val) = vars.get(key) {
-                        result.push_str(val);
-                    } else {
-                        result.push_str("{{");
-                        result.push_str(key);
-                        result.push_str("}}");
-                    }
+            let after_open = &rest[open + 2..];
+            if let Some(close) = after_open.find("}}") {
+                let key = &after_open[..close];
+                if let Some(val) = vars.get(key) {
+                    result.push_str(val);
                 } else {
-                    // Unclosed -- emit literally
                     result.push_str("{{");
                     result.push_str(key);
+                    result.push_str("}}");
                 }
+                rest = &after_open[close + 2..];
             } else {
-                result.push(bytes[i] as char);
-                i += 1;
+                // Unclosed -- emit literally and stop scanning.
+                result.push_str("{{");
+                result.push_str(after_open);
+                return result;
             }
         }
 
+        // Emit any remaining text after the last placeholder.
+        result.push_str(rest);
         result
     }
 
@@ -166,5 +152,21 @@ mod tests {
     fn unresolved_vars_empty_for_plain_text() {
         let vars = TemplateEngine::unresolved_vars("no vars");
         assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn render_preserves_multibyte_utf8() {
+        let mut vars = HashMap::new();
+        vars.insert("GREETING".to_owned(), "hola".to_owned());
+
+        let out = TemplateEngine::render("\u{00e9}\u{00fc}\u{00f1} {{GREETING}} \u{1f600}!", &vars);
+        assert_eq!(out, "\u{00e9}\u{00fc}\u{00f1} hola \u{1f600}!");
+    }
+
+    #[test]
+    fn render_handles_unclosed_braces() {
+        let vars = HashMap::new();
+        let out = TemplateEngine::render("start {{OPEN", &vars);
+        assert_eq!(out, "start {{OPEN");
     }
 }
