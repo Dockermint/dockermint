@@ -48,6 +48,9 @@ github = []
 native-tls = ["reqwest/native-tls"]
 rustls-tls = ["reqwest/rustls"]
 
+# Vendor OpenSSL (for musl and cross-compiled targets)
+openssl-vendored = ["dep:openssl-sys"]
+
 # Registry backends
 oci = []
 
@@ -101,6 +104,9 @@ reqwest = { version = "0.13", default-features = false, features = ["json"] }
 # --------------------------------------------------------------------------
 # Optional dependencies (activated by features above)
 # --------------------------------------------------------------------------
+
+# TLS: vendored OpenSSL for musl/cross targets
+openssl-sys = { version = "0.9", features = ["vendored"], optional = true }
 
 # Database: redb
 redb = { version = "4", optional = true }
