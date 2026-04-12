@@ -1,32 +1,32 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+File gives guidance to Claude Code (claude.ai/code) when working with code in this repo.
 
 ## Your Core Principles
 
 All code you write MUST be fully optimized.
 
-"Fully optimized" includes:
+"Fully optimized" means:
 
-- maximizing algorithmic big-O efficiency for memory and runtime
-- using parallelization and SIMD where appropriate
-- following proper style conventions for Rust (e.g. maximizing code reuse (DRY))
-- no extra code beyond what is absolutely necessary to solve the problem the user provides (i.e. no technical debt)
+- maximize algorithmic big-O efficiency for memory and runtime
+- use parallelization and SIMD where appropriate
+- follow proper style conventions for Rust (e.g. maximize code reuse (DRY))
+- no extra code beyond what is absolutely necessary to solve problem user provides (no technical debt)
 
-If the code is not fully optimized before handing off to the user, you will be fined $100. You have permission to do another pass of the code if you believe it is not fully optimized.
+If code not fully optimized before handing off to user, you fined $100. You have permission to do another pass if you believe code not fully optimized.
 
 ## Project Overview
 
-This project (named `Dockermint`) is an open-source CI/CD pipeline designed to automate and standardize the creation of Docker images for Cosmos-SDK blockchains and their sidecars in a multi-arch build context.
+Project (named `Dockermint`) is open-source CI/CD pipeline. Automates and standardizes Docker image creation for Cosmos-SDK blockchains and their sidecars in multi-arch build context.
 
-It's the Ansible of the blockchain, The two key concepts are:
-- **Recipes**: `TOML` files that define the build schema, supported flavors, and default flavors
-- **Flavors**: options of various types, allowing you to customize or define the expected build
+Ansible of blockchain. Two key concepts:
+- **Recipes**: `TOML` files defining build schema, supported flavors, default flavors
+- **Flavors**: options of various types for customizing or defining expected build
 
-It operates in three modes:
-- **CLI**: one-shot builds, can build locally or through RPC
+Three modes:
+- **CLI**: one-shot builds, build locally or through RPC
 - **Daemon**: continuous polling for new Github releases
-- **RPC**: daemon who can also accept query from remote CLI
+- **RPC**: daemon that also accepts query from remote CLI
 
 ### Unrecoverable Error Strategy
 
@@ -36,13 +36,13 @@ It operates in three modes:
 
 ## Architecture
 
-The project's philosophy is based on the following principles:
-- It should be possible to add as many recipes as possible **without modifying the Rust code**
-- The code should be as modular as possible; **modules should be organized into features and be replaceable with genericity (by implementing a trait)**
+Philosophy based on:
+- Possible to add as many recipes as possible **without modifying Rust code**
+- Code as modular as possible; **modules organized into features and replaceable with genericity (by implementing trait)**
 
 ### Features
 
-Dockermint module's are featured at build time:
+Dockermint modules featured at build time:
 
 | Module  | Default module |
 | :------ | :------------- |
@@ -65,13 +65,13 @@ Dockermint module's are featured at build time:
 
 ### Workspace
 
-In the root of the project:
+In project root:
 - `.github`: Github Action
 - `recipes/`: Currently supported recipes
 - `assets/`: Assets for README
 - `docs/`: Documentation
 
-Modules in the `./src` folder:
+Modules in `./src` folder:
 - `cli`: Clap-based CLI with subcommands
 - `config`: Config loading
 - `logger`: Structured logging with rotation
@@ -83,7 +83,7 @@ Modules in the `./src` folder:
 - `saver`: Build state persistence
 - `notifier`: Notify build status
 - `commands`: Handles command execution
-- `metrics`:  Expose metrics server
+- `metrics`: Expose metrics server
 
 Submodules:
 
@@ -92,40 +92,40 @@ Submodules:
 ### Configuration Files
 
 - **MUST** version all configuration files
-- **MUST** store secrets in `.env` file instead of a configuration file
-- `TOML` is the default format
-- Configuration of Dockermint CLI / Daemon / RPC is provided via a `config.toml`, but CLI args overwrite file
-- Wanted flavors for all or specific recipes are provided in `config.toml`
-- If no wanted flavors are provided, use the default (in recipe's file)
-- If wanted features are incompatible, throw an error (following the Unrecoverable Error Strategy)
+- **MUST** store secrets in `.env` file instead of configuration file
+- `TOML` is default format
+- Configuration of Dockermint CLI / Daemon / RPC provided via `config.toml`, but CLI args overwrite file
+- Wanted flavors for all or specific recipes provided in `config.toml`
+- If no wanted flavors provided, use default (in recipe's file)
+- If wanted features incompatible, throw error (following Unrecoverable Error Strategy)
 
 ## Preferred Tools
 
-- Use `cargo` for project management, building, and dependency management.
-- Use `indicatif` to track long-running operations with progress bars. The message should be contextually sensitive.
+- Use `cargo` for project management, building, dependency management.
+- Use `indicatif` to track long-running operations with progress bars. Message should be contextually sensitive.
 - Use `serde` with `serde_json` for JSON serialization/deserialization.
 - Use `ratatui` and `crossterm` for terminal applications/TUIs.
-- Use `axum` for creating any web servers or HTTP APIs.
+- Use `axum` for web servers or HTTP APIs.
   - Keep request handlers async, returning `Result<Response, AppError>` to centralize error handling.
   - Use layered extractors and shared state structs instead of global mutable data.
   - Add `tower` middleware (timeouts, tracing, compression) for observability and resilience.
-  - Offload CPU-bound work to `tokio::task::spawn_blocking` or background services to avoid blocking the reactor.
-- When reporting errors to the console, use `tracing::error!` or `log::error!` instead of `println!`.
+  - Offload CPU-bound work to `tokio::task::spawn_blocking` or background services to avoid blocking reactor.
+- When reporting errors to console, use `tracing::error!` or `log::error!` instead of `println!`.
 
 ## Code Style and Formatting
 
 - **MUST** use meaningful, descriptive variable and function names
 - **MUST** follow Rust API Guidelines and idiomatic Rust conventions
 - **MUST** use 4 spaces for indentation (never tabs)
-- **NEVER** use emoji, or unicode that emulates emoji (e.g. ✓, ✗). The only exception is when writing tests and testing the impact of multibyte characters.
+- **NEVER** use emoji or unicode that emulates emoji (e.g. ✓, ✗). Only exception: writing tests, testing impact of multibyte characters, documentation
 - Use snake_case for functions/variables/modules, PascalCase for types/traits, SCREAMING_SNAKE_CASE for constants
 - Limit line length to 100 characters (rustfmt default)
-- Assume the user is a Rust novice
+- Assume user is Rust novice
 
 ## Documentation
 
-- **MUST** include doc comments for all public functions, structs, enums, and methods
-- **MUST** document function parameters, return values, and errors
+- **MUST** include doc comments for all public functions, structs, enums, methods
+- **MUST** document function parameters, return values, errors
 - Keep comments up-to-date with code changes
 - Include examples in doc comments for complex functions
 
@@ -161,9 +161,9 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 ## Type System
 
 - **MUST** leverage Rust's type system to prevent bugs at compile time
-- **NEVER** use `.unwrap()` in library code; use `.expect()` only for invariant violations with a descriptive message
+- **NEVER** use `.unwrap()` in library code; use `.expect()` only for invariant violations with descriptive message
 - **MUST** use meaningful custom error types with `thiserror`
-- Use newtypes to distinguish semantically different values of the same underlying type
+- Use newtypes to distinguish semantically different values of same underlying type
 - Prefer `Option<T>` over sentinel values
 
 ## Error Handling
@@ -176,17 +176,17 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 
 ## Function Design
 
-- **MUST** keep functions focused on a single responsibility
+- **MUST** keep functions focused on single responsibility
 - **MUST** prefer borrowing (`&T`, `&mut T`) over ownership when possible
-- Limit function parameters to 5 or fewer; use a config struct for more
+- Limit function parameters to 5 or fewer; use config struct for more
 - Return early to reduce nesting
 - Use iterators and combinators over explicit loops where clearer
 
 ## Struct and Enum Design
 
-- **MUST** keep types focused on a single responsibility
+- **MUST** keep types focused on single responsibility
 - **MUST** derive common traits: `Debug`, `Clone`, `PartialEq` where appropriate
-- Use `#[derive(Default)]` when a sensible default exists
+- Use `#[derive(Default)]` when sensible default exists
 - Prefer composition over inheritance-like patterns
 - Use builder pattern for complex struct construction
 - Make fields private by default; provide accessor methods when needed
@@ -195,15 +195,15 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 
 - **MUST** write unit tests for all new functions and types
 - **MUST** mock external dependencies (APIs, databases, file systems)
-- **MUST** use the built-in `#[test]` attribute and `cargo test`
-- Follow the Arrange-Act-Assert pattern
+- **MUST** use built-in `#[test]` attribute and `cargo test`
+- Follow Arrange-Act-Assert pattern
 - Do not commit commented-out tests
 - Use `#[cfg(test)]` modules for test code
 
 ## Imports and Dependencies
 
-- **MUST** use latest available version of a dependency
-- **MUST** avoid wildcard imports (`use module::*`) except for preludes, test modules (`use super::*`), and prelude re-exports
+- **MUST** use latest available version of dependency
+- **MUST** avoid wildcard imports (`use module::*`) except for preludes, test modules (`use super::*`), prelude re-exports
 - **MUST** document dependencies in `Cargo.toml` with version constraints
 - Crates **MUST** come from `crates.io` or `https://github.com/Dockermint`
 - Use `cargo` for dependency management
@@ -223,8 +223,8 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 ## Memory and Performance
 
 - **MUST** avoid unnecessary allocations; prefer `&str` over `String` when possible
-- **MUST** use `Cow<'_, str>` when ownership is conditionally needed
-- Use `Vec::with_capacity()` when the size is known
+- **MUST** use `Cow<'_, str>` when ownership conditionally needed
+- Use `Vec::with_capacity()` when size known
 - Prefer stack allocation over heap when appropriate
 - Use `Arc` and `Rc` judiciously; prefer borrowing
 
@@ -233,13 +233,13 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 - **MUST** use `Send` and `Sync` bounds appropriately
 - **MUST** prefer `tokio` for async runtime in async applications
 - **MUST** use `rayon` for CPU-bound parallelism
-- Avoid `Mutex` when `RwLock` or lock-free alternatives are appropriate
+- Avoid `Mutex` when `RwLock` or lock-free alternatives appropriate
 - Use channels (`mpsc`, `crossbeam`) for message passing
 
 ## Security
 
-- **NEVER** store secrets, API keys, or passwords in code. Only store them in `.env`.
-  - Ensure `.env` is declared in `.gitignore`.
+- **NEVER** store secrets, API keys, or passwords in code. Only store in `.env`.
+  - Ensure `.env` declared in `.gitignore`.
 - **MUST** use environment variables for sensitive configuration via `dotenvy` or `std::env`
 - **NEVER** log sensitive information (passwords, tokens, PII)
 - Use `secrecy` crate for sensitive data types
@@ -247,11 +247,10 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 ## Version Control
 
 - **MUST** follow `Conventional Commits` and `Conventional Branch`
-- **MUST** create a branch per feature from `develop`
+- **MUST** create branch per feature from `develop`
 - **MUST** write clear, descriptive commit messages
 - **MUST** sign commit with GPG key
 - **NEVER** push on `main`
-- **NEVER** commit AI-related's .MD files, except `CLAUDE.md`
 - **NEVER** commit commented-out code; delete it
 - **NEVER** commit debug `println!` statements or `dbg!` macros
 - **NEVER** commit credentials or sensitive data
@@ -263,7 +262,7 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 - **MUST** use `clippy` for linting and follow its suggestions
 - **MUST** ensure code compiles with no warnings (use `-D warnings` flag in CI, not `#![deny(warnings)]` in source)
 - **MUST** use `cargo-deny` for checking code
-- Use `cargo` for building, testing, and dependency management
+- Use `cargo` for building, testing, dependency management
 - Use `cargo test` for running tests
 - Use `cargo doc` for generating documentation
 
@@ -274,7 +273,7 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 - [ ] Deny passes (`cargo deny check all`)
 - [ ] Audit passes (`cargo audit`)
 - [ ] Clippy passes (`cargo clippy -- -D warnings`)
-- [ ] Code is formatted (`cargo fmt --check`)
+- [ ] Code formatted (`cargo fmt --check`)
 - [ ] All public items have doc comments
 - [ ] No commented-out code or debug statements
 - [ ] No hardcoded credentials
