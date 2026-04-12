@@ -234,7 +234,21 @@ impl BuildKitBuilder {
 ///
 /// Returns [`BuilderError::DockerfileGeneration`] on I/O failure.
 fn write_secret_file(path: &Path, value: &str) -> Result<(), BuilderError> {
-    std::fs::write(path, value)
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(path)
+        .map_err(|e| BuilderError::DockerfileGeneration(format!("create secret: {e}")))?;
+
+    // Restrict to owner-only before writing content
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        file.set_permissions(perms)
+            .map_err(|e| BuilderError::DockerfileGeneration(format!("chmod secret: {e}")))?;
+    }
+
+    file.write_all(value.as_bytes())
         .map_err(|e| BuilderError::DockerfileGeneration(format!("write secret: {e}")))
 }
 
