@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::ReadableTable;
+use redb::{ReadableDatabase, ReadableTable};
 
 use crate::error::DatabaseError;
 use crate::saver::{BuildRecord, BuildStatus, Database};
@@ -43,7 +43,8 @@ impl RedbDatabase {
             })?;
         }
 
-        let db = redb::Database::create(path)
+        let db = redb::Database::builder()
+            .create(path)
             .map_err(|e| DatabaseError::Open(format!("{}: {e}", path.display())))?;
 
         // Ensure the table exists
@@ -135,11 +136,11 @@ impl Database for RedbDatabase {
             .map_err(|e| DatabaseError::Read(format!("iter: {e}")))?;
 
         for entry in iter {
-            let entry: (redb::AccessGuard<&str>, redb::AccessGuard<&[u8]>) =
+            let (k_guard, v_guard) =
                 entry.map_err(|e| DatabaseError::Read(format!("next: {e}")))?;
-            let k: &str = entry.0.value();
+            let k: &str = k_guard.value();
             if k.starts_with(&prefix) {
-                let stored: StoredRecord = serde_json::from_slice(entry.1.value())
+                let stored: StoredRecord = serde_json::from_slice(v_guard.value())
                     .map_err(|e| DatabaseError::Serialization(format!("{e}")))?;
                 records.push(from_stored(stored));
             }

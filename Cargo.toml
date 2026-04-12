@@ -46,7 +46,7 @@ github = []
 
 # TLS backends (select at least one for HTTPS)
 native-tls = ["reqwest/native-tls"]
-rustls-tls = ["reqwest/rustls-tls"]
+rustls-tls = ["reqwest/rustls"]
 
 # Registry backends
 oci = []
@@ -68,7 +68,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1"
 
 # Error handling
 thiserror = "2"
@@ -93,17 +93,17 @@ semver = { version = "1", features = ["serde"] }
 globset = "0.4"
 
 # Progress bars
-indicatif = "0.17"
+indicatif = "0.18"
 
 # HTTP client (TLS backend selected via features)
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
 # --------------------------------------------------------------------------
 # Optional dependencies (activated by features above)
 # --------------------------------------------------------------------------
 
 # Database: redb
-redb = { version = "2", optional = true }
+redb = { version = "4", optional = true }
 
 # Metrics server
 axum = { version = "0.8", optional = true }
