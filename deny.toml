@@ -9,7 +9,9 @@ targets = [
 all-features = true
 
 [advisories]
-ignore = []
+ignore = [
+    "RUSTSEC-2025-0119", # number_prefix unmaintained (transitive via indicatif)
+]
 
 [licenses]
 allow = [
@@ -22,6 +24,7 @@ allow = [
     "Unicode-DFS-2016",
     "Zlib",
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 exceptions = []

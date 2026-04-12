@@ -17,4 +17,103 @@ publish = false
 [badges]
 maintenance = { status = "actively-developed" }
 
+# ===========================================================================
+# Features
+# ===========================================================================
+# Each replaceable module is gated behind a feature flag. The default set
+# mirrors the table in CLAUDE.md.
+# ===========================================================================
+
+[features]
+default = [
+    "redb",
+    "telegram",
+    "github",
+    "native-tls",
+    "oci",
+    "buildkit",
+    "prometheus",
+]
+
+# Database backends
+redb = ["dep:redb"]
+
+# Notification backends
+telegram = []
+
+# VCS backends
+github = []
+
+# TLS backends (select at least one for HTTPS)
+native-tls = ["reqwest/native-tls"]
+rustls-tls = ["reqwest/rustls-tls"]
+
+# Registry backends
+oci = []
+
+# Builder backends
+buildkit = []
+
+# Metrics backends
+prometheus = ["dep:axum", "dep:tower", "dep:tower-http"]
+
+# ===========================================================================
+# Dependencies
+# ===========================================================================
+
 [dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Security
+secrecy = { version = "0.10", features = ["serde"] }
+dotenvy = "0.15"
+
+# Versioning
+semver = { version = "1", features = ["serde"] }
+
+# Pattern matching (tag include/exclude filters)
+globset = "0.4"
+
+# Progress bars
+indicatif = "0.17"
+
+# HTTP client (TLS backend selected via features)
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+# --------------------------------------------------------------------------
+# Optional dependencies (activated by features above)
+# --------------------------------------------------------------------------
+
+# Database: redb
+redb = { version = "2", optional = true }
+
+# Metrics server
+axum = { version = "0.8", optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = [
+    "compression-gzip",
+    "timeout",
+    "trace",
+], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util", "macros"] }
+tempfile = "3"
