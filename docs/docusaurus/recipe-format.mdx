@@ -1,0 +1,534 @@
+---
+id: recipe-format
+title: Recipe Format Reference
+sidebar_label: Recipe Format
+sidebar_position: 2
+description: Complete TOML schema reference for Dockermint recipe files, covering every section with examples from the actual cosmos-gaiad and kyve-kyved recipes.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+A Dockermint **recipe** is a TOML file that fully specifies how to build a
+Docker image for a single blockchain binary. No Rust code changes are needed
+to add a new chain — only a new recipe file.
+
+Recipes live in the `recipes/` directory by default (configurable via
+`config.toml`).
+
+---
+
+## Variable Reference
+
+Recipe strings support two classes of template variables. Both use `{{name}}`
+syntax but are resolved at different times.
+
+<Tabs>
+  <TabItem value="host" label="Host-time ({{UPPERCASE}})" default>
+
+Resolved at Dockermint startup by `recipe::host_vars::collect`, before any
+Docker build begins.
+
+| Variable                  | Value                                                       |
+| :------------------------ | :---------------------------------------------------------- |
+| `{{HOST_ARCH}}`           | Host CPU architecture (`x86_64` or `aarch64`)              |
+| `{{CREATION_TIMESTAMP}}`  | UTC ISO 8601 timestamp (`YYYY-MM-DDTHH:MM:SSZ`)            |
+| `{{SEMVER_TAG}}`          | Git tag being built (e.g. `v21.0.1`)                       |
+| `{{BUILD_TAGS_COMMA_SEP}}`| `build_tags` flavor values joined with commas              |
+| `{{repository_path}}`     | Fixed as `/workspace` (Dockermint-provided)                |
+
+Additional environment variables (e.g. `{{GH_USER}}`, `{{GH_PAT}}`) are
+forwarded via `extend_from_env` and become `ARG` declarations in the
+Dockerfile.
+
+Flavor default values may reference host-time variables:
+
+```toml
+[flavours.default]
+architecture = "{{HOST_ARCH}}"   # expanded to "x86_64" at startup
+```
+
+  </TabItem>
+  <TabItem value="build" label="Build-time ({{lowercase}})">
+
+Defined in `[variables]` as shell commands. Not resolved by Dockermint — they
+become shell variable assignments inside the Dockerfile `RUN` instruction and
+are resolved by the container shell at build time.
+
+```toml
+[variables]
+repo_version = { shell = "git describe --exact-match 2>/dev/null || ..." }
+repo_commit  = { shell = "git log -1 --format='%H'" }
+```
+
+In linker variable templates, Dockermint first expands any host-time
+references, then converts surviving `{{lowercase}}` placeholders to `$name`:
+
+```toml
+# Recipe:
+"github.com/.../version.Version" = "{{repo_version}}"
+
+# Generated Dockerfile RUN:
+# -X 'github.com/.../version.Version=$repo_version'
+```
+
+  </TabItem>
+  <TabItem value="profiles" label="Profile variables">
+
+Profile variables (from `[profiles]`) are injected into the resolved variable
+map alongside host-time variables during `recipe::resolve`. They behave as
+host-time variables — available for `{{lowercase}}` references in linker
+templates and other recipe strings.
+
+```toml
+[profiles.network.mainnet]
+denom = "ukyve"
+
+# Used as:
+"github.com/.../types.Denom" = "{{denom}}"
+```
+
+  </TabItem>
+</Tabs>
+
+:::warning
+Build-time variables (`{{lowercase}}` from `[variables]`) cannot be used in
+fields that Dockermint renders before the Docker build starts — such as
+`[image].tag`, `[[pre_build]].source` host-time portions, or flavor defaults.
+Only host-time variables are available at those points.
+:::
+
+---
+
+## Schema Version
+
+Every recipe must declare a schema version. The current maximum is `1`.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[meta]
+schema_version = 1
+min_dockermint_version = "0.1.0"
+```
+
+| Field                    | Type   | Description                                    |
+| :----------------------- | :----- | :--------------------------------------------- |
+| `schema_version`         | `u32`  | Recipe file schema version. Must be `<= 1`.    |
+| `min_dockermint_version` | string | Minimum Dockermint release required to parse.  |
+
+---
+
+## `[header]`
+
+Project identity for the recipe.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[header]
+name           = "Cosmos"
+repo           = "https://github.com/cosmos/gaia"
+type           = "golang"
+binary_name    = "gaiad"
+include_patterns = ""
+exclude_patterns = ""
+```
+
+| Field              | Type   | Required | Description                                                |
+| :----------------- | :----- | :------- | :--------------------------------------------------------- |
+| `name`             | string | yes      | Human-readable project name                                |
+| `repo`             | string | yes      | Full git repository URL                                    |
+| `type`             | string | yes      | Build system type (e.g. `"golang"`)                        |
+| `binary_name`      | string | yes      | Produced binary name; also available as `{{binary_name}}`  |
+| `include_patterns` | string | no       | Comma-separated glob patterns — only matching tags built   |
+| `exclude_patterns` | string | no       | Comma-separated glob patterns — matching tags skipped      |
+
+---
+
+## `[flavours]`
+
+Declares the available build dimensions and their defaults.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[flavours.available]
+architecture = ["x86_64", "aarch64"]
+db_backend   = ["goleveldb", "pebbledb"]
+binary_type  = ["dynamic", "static"]
+running_env  = ["alpine3.23", "bookworm", "distroless"]
+running_user = ["root", "custom", "dockermint"]
+build_tags   = ["netgo", "ledger", "muslc"]
+
+[flavours.default]
+architecture = "{{HOST_ARCH}}"
+db_backend   = "goleveldb"
+binary_type  = "static"
+running_env  = "alpine3.23"
+running_user = "root"
+build_tags   = ["netgo", "muslc"]
+```
+
+**`flavours.available`** maps each dimension to its allowed values. Any
+selection not in this list causes an `IncompatibleFlavour` error.
+
+**`flavours.default`** maps each dimension to its default selection. Defaults
+are overridden by `config.toml` and then by CLI `--flavor` arguments.
+
+A default can be a single string or an array:
+
+```toml
+db_backend = "goleveldb"          # single selection
+build_tags = ["netgo", "muslc"]   # multi-value selection
+```
+
+:::tip
+Template variables like `{{HOST_ARCH}}` are allowed in defaults and are
+resolved at startup. They bypass validation against `available` lists.
+:::
+
+---
+
+## `[scrapper]`
+
+Defines the Docker image and clone method used to fetch the source repository.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[scrapper]
+image     = "golang:1.23-alpine3.21"
+install   = "apk add --no-cache git"
+env       = ["{{GH_USER}}", "{{GH_PAT}}"]
+method    = "try-authenticated-clone"
+directory = "{{repository_path}}"
+```
+
+| Field       | Type       | Required | Description                                             |
+| :---------- | :--------- | :------- | :------------------------------------------------------ |
+| `image`     | string     | yes      | Docker image for the source-cloning stage; also used to auto-detect the builder install command |
+| `install`   | string     | no       | Shell command to install deps inside the scrapper image |
+| `env`       | `[string]` | no       | Environment variable templates forwarded as `ARG` in the Dockerfile (e.g. `"{{GH_USER}}"`) |
+| `method`    | string     | yes      | Clone strategy; `"try-authenticated-clone"` attempts authenticated clone then falls back to public |
+| `directory` | string     | yes      | Working directory inside the container; `{{repository_path}}` resolves to `/workspace` |
+
+---
+
+## `[variables]`
+
+Shell commands whose stdout is captured as named build variables. These
+variables can be referenced as `{{variable_name}}` in any recipe string.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[variables]
+repo_commit      = { shell = "git log -1 --format='%H'" }
+repo_version     = { shell = "git describe --exact-match 2>/dev/null || echo \"$(git rev-parse --abbrev-ref HEAD)-$(git log -1 --format='%H')\"" }
+golang_version   = { shell = "grep -E '^(toolchain|go) ' go.mod | head -1 | sed 's/^toolchain go//;s/^go //'" }
+wasmvm_version   = { shell = "go list -m github.com/CosmWasm/wasmvm/v2 2>/dev/null | sed 's:.* ::'" }
+cometbft_version = { shell = "go list -m github.com/cometbft/cometbft | sed 's:.* ::'" }
+```
+
+Each entry is an inline table with a single `shell` key. The command runs
+inside the build context; its trimmed stdout becomes the variable value.
+
+---
+
+## `[builder]`
+
+Platform-specific package installation for the builder stage.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[builder.install]
+alpine = "apk add --no-cache alpine-sdk linux-headers"
+ubuntu = "apt-get update && apt-get install -y --no-install-recommends make gcc build-essential linux-headers-generic"
+```
+
+Keys are distribution family names. The Dockerfile generator selects the
+appropriate command automatically by matching the **longest** key that appears
+as a substring of the scrapper image name. For `golang:1.23-alpine3.21`, the
+`alpine` key matches and its command is merged into the same `RUN` instruction
+as the scrapper `install` command (joined with `&&`). Adding a new key (e.g.
+`fedora = "dnf install ..."`) is sufficient — no Rust code change is needed.
+
+---
+
+## `[[pre_build]]`
+
+An array of conditional Dockerfile instructions executed before the main
+build step. Each entry is included when `SelectedFlavours::has_value(condition)`
+returns `true` — that is, when the condition string matches any active
+single-value flavor selection or appears in any active multi-value selection.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[[pre_build]]
+condition   = "static"
+instruction = "ADD"
+source      = "https://github.com/CosmWasm/wasmvm/releases/download/{{wasmvm_version}}/libwasmvm_muslc.{{HOST_ARCH}}.a"
+dest        = "/lib/libwasmvm_muslc.{{HOST_ARCH}}.a"
+```
+
+The example fires when `binary_type = "static"` is active. `{{wasmvm_version}}`
+is a build-time variable (shell-resolved); `{{HOST_ARCH}}` is a host-time
+variable (expanded by Dockermint before writing the Dockerfile).
+
+| Field         | Type   | Required | Description                                         |
+| :------------ | :----- | :------- | :-------------------------------------------------- |
+| `condition`   | string | yes      | Flavor value evaluated with `has_value`             |
+| `instruction` | string | yes      | Dockerfile instruction (`ADD`, `RUN`, `COPY`, etc.) |
+| `source`      | string | no       | Source argument (URL, path, or template string)     |
+| `dest`        | string | no       | Destination path inside the image                   |
+
+How each instruction is rendered in the Dockerfile:
+
+| `instruction` | Generated output                              |
+| :------------ | :-------------------------------------------- |
+| `ADD`         | `ADD <source> <dest>`                         |
+| `RUN`         | `RUN <source>`                                |
+| `COPY`        | `COPY --from=builder <source> <dest>`         |
+| other         | `<INSTRUCTION> <source> <dest>` (passthrough) |
+
+:::tip
+`has_value` checks across all flavor dimensions, not just `binary_type`. A
+condition of `"netgo"` would fire when `netgo` is in the `build_tags`
+multi-value selection.
+:::
+
+---
+
+## `[build]`
+
+Build environment, linker configuration, and build path.
+
+<Tabs>
+  <TabItem value="env" label="[build.env]" default>
+
+Environment variables set during compilation.
+
+```toml
+[build.env]
+CGO_ENABLED = "1"
+```
+
+  </TabItem>
+  <TabItem value="linker-flags" label="[build.linker.flags]">
+
+Maps `binary_type` flavor values to their linker flag strings.
+
+```toml
+[build.linker.flags]
+dynamic = "-w -s -extldflags '-z noexecstack'"
+static  = "-linkmode=external -w -s -extldflags '-Wl,-z,muldefs -static -z noexecstack'"
+```
+
+  </TabItem>
+  <TabItem value="linker-vars" label="[build.linker.variables]">
+
+Maps Go import paths to values embedded via `-X`. Template variables are
+expanded before being passed to `go build`.
+
+```toml
+[build.linker.variables]
+"github.com/cosmos/cosmos-sdk/version.Name"    = "gaia"
+"github.com/cosmos/cosmos-sdk/version.Version" = "{{repo_version}}"
+"github.com/cosmos/cosmos-sdk/version.Commit"  = "{{repo_commit}}"
+```
+
+  </TabItem>
+  <TabItem value="path" label="[build.path]">
+
+Path to the Go package to build. Template variables are supported.
+
+```toml
+[build.path]
+path = "{{repository_path}}/cmd/gaiad"
+```
+
+  </TabItem>
+</Tabs>
+
+---
+
+## `[user]`
+
+Per-user-type configuration, keyed by user type name. Referenced when
+`running_user` is set to a non-root value.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[user.dockermint]
+username = "dockermint"
+uid      = 10000
+gid      = 10000
+```
+
+| Field      | Type   | Description                   |
+| :--------- | :----- | :---------------------------- |
+| `username` | string | Username inside the container |
+| `uid`      | `u32`  | Numeric user ID               |
+| `gid`      | `u32`  | Numeric group ID              |
+
+---
+
+## `[copy]`
+
+Specifies files to copy from the builder stage to the runner stage.
+
+Top-level entries are **always** copied:
+
+```toml
+[copy]
+"/go/bin/gaiad" = { dest = "/usr/bin/{{binary_name}}", type = "entrypoint" }
+```
+
+Sub-tables keyed by a `binary_type` flavor value are **conditional**:
+
+```toml
+[copy.dynamic]
+"/go/pkg/mod/github.com/!cosm!wasm/wasmvm/v2@{{wasmvm_version}}/internal/api/libwasmvm.{{HOST_ARCH}}.so" = { dest = "/lib/libwasmvm.{{HOST_ARCH}}.so", type = "dyn-library" }
+```
+
+Each entry value is an inline table:
+
+| Field  | Type   | Description                                          |
+| :----- | :----- | :--------------------------------------------------- |
+| `dest` | string | Destination path in the runner image                 |
+| `type` | string | Artifact kind: `"entrypoint"`, `"dyn-library"`, etc. |
+
+---
+
+## `[expose]`
+
+Ports declared with `EXPOSE` in the final image.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[expose]
+ports = [
+    { port = 26656, description = "P2P" },
+    { port = 26657, description = "RPC" },
+    { port = 26660, description = "Prometheus metrics" },
+    { port = 1317,  description = "REST API" },
+    { port = 9090,  description = "gRPC" },
+    { port = 9091,  description = "gRPC-Web" },
+]
+```
+
+---
+
+## `[labels]`
+
+OCI image labels applied to the final image. Template variables are supported.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[labels]
+"org.opencontainers.image.created"     = "{{CREATION_TIMESTAMP}}"
+"org.opencontainers.image.version"     = "{{repo_version}}"
+"org.opencontainers.image.revision"    = "{{repo_commit}}"
+"org.opencontainers.image.title"       = "Gaiad"
+"org.opencontainers.image.description" = "Cosmos Hub Node"
+"org.opencontainers.image.licenses"    = "Apache-2.0"
+```
+
+---
+
+## `[image]`
+
+The Docker image tag template. All resolved variables are available.
+
+```toml title="recipes/cosmos-gaiad.toml"
+[image]
+tag = "cosmos-gaiad-{{db_backend}}:{{SEMVER_TAG}}-{{running_env}}"
+```
+
+`{{SEMVER_TAG}}` is the Git tag being built (e.g. `v21.0.1`). Because
+`running_env` is injected as a resolved variable during `recipe::resolve`,
+it can be used in the tag template directly.
+
+---
+
+## `running_env` to Docker Image Mapping
+
+The `running_env` flavor value is converted to a Docker image reference by
+`running_env_to_image` in the Dockerfile generator.
+
+| `running_env` value  | Runner `FROM` image                  |
+| :------------------- | :----------------------------------- |
+| `alpine3.23`         | `alpine:3.23`                        |
+| `ubuntu24.04`        | `ubuntu:24.04`                       |
+| `bookworm`           | `debian:bookworm-slim`               |
+| `distroless`         | `gcr.io/distroless/static-debian12`  |
+| `ghcr.io/foo:tag`    | `ghcr.io/foo:tag` (passed through)   |
+
+The general rule: split at the first digit boundary and insert `:`. Named
+values (`bookworm`, `distroless`) have explicit mappings. Full references
+(containing `/` or `:`) pass through unchanged.
+
+:::info
+Distroless images have no shell. If `running_user` is non-root and
+`running_env` is `distroless`, user creation commands are skipped. The
+non-root user must be set via numeric UID in the base image.
+:::
+
+---
+
+## `[profiles]`
+
+Optional profile tables that inject additional variables based on a flavor
+selection.
+
+```
+[profiles.<dimension>.<value>]
+key = "value"
+```
+
+When `<dimension>` resolves to `<value>`, all key-value pairs from that table
+are added to the resolved variable map.
+
+```toml title="recipes/kyve-kyved.toml"
+[profiles.network.mainnet]
+denom                   = "ukyve"
+team_tge                = "2023-03-14T14:03:14"
+team_foundation_address = "kyve1xjpl57p7f49y5gueu7rlfytaw9ramcn5zhjy2g"
+team_allocation         = "165000000000000"
+
+[profiles.network.kaon]
+denom                   = "tkyve"
+team_tge                = "2023-02-07T14:00:00"
+team_foundation_address = "kyve1vut528et85755xsncjwl6dx8xakuv26hxgyv0n"
+team_allocation         = "165000000000000"
+```
+
+Profile variables are then referenced in linker variables:
+
+```toml
+"github.com/KYVENetwork/chain/x/global/types.Denom" = "{{denom}}"
+```
+
+:::info
+Only `FlavorValue::Single` dimensions trigger profile injection. Multi-value
+dimensions (like `build_tags`) do not look up profiles.
+:::
+
+---
+
+## Image Tag Examples
+
+<Tabs>
+  <TabItem value="cosmos-default" label="Cosmos (defaults)" default>
+
+```
+cosmos-gaiad-goleveldb:v21.0.1-alpine3.23
+```
+
+  </TabItem>
+  <TabItem value="cosmos-pebble" label="Cosmos (pebbledb + bookworm)">
+
+```bash
+dockermint build -r recipes/cosmos-gaiad.toml -t v21.0.1 \
+  --flavor db_backend=pebbledb \
+  --flavor running_env=bookworm
+# produces: cosmos-gaiad-pebbledb:v21.0.1-bookworm
+```
+
+  </TabItem>
+  <TabItem value="kyve-kaon" label="Kyve (kaon testnet)">
+
+```bash
+dockermint build -r recipes/kyve-kyved.toml -t v1.4.0 \
+  --flavor network=kaon
+# produces: kyve-kyved-kaon-goleveldb:v1.4.0-alpine3.23
+```
+
+  </TabItem>
+</Tabs>

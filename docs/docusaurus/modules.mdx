@@ -1,0 +1,1230 @@
+---
+id: modules
+title: Module Reference
+sidebar_label: Modules
+sidebar_position: 5
+description: Per-module documentation covering traits, public APIs, configuration keys, default implementations, and error types for every Dockermint src/ module.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+This document covers each `src/` module: its purpose, public trait or API,
+configuration keys, and available implementations.
+
+---
+
+## `checker`
+
+**Purpose:** Verify system requirements and enforce single-instance execution.
+
+**Source:** `src/checker/mod.rs`
+
+### Public API
+
+```rust
+pub struct SystemRequirements { pub docker: bool, pub buildx: bool, pub git: bool }
+pub struct LockGuard { /* RAII, removes lock file on drop */ }
+
+pub async fn verify_requirements(docker_socket_uri: &str) -> Result<SystemRequirements, CheckerError>
+pub fn ensure_singleton() -> Result<LockGuard, CheckerError>
+pub fn ensure_singleton_at(path: &Path) -> Result<LockGuard, CheckerError>
+```
+
+`verify_requirements` accepts the Docker daemon socket URI (from
+`config.docker.socket_uri`) and probes three tools:
+
+| Tool | Environment | Command |
+| :--- | :---------- | :------ |
+| `docker` | `DOCKER_HOST=<docker_socket_uri>` | `docker version` |
+| `docker buildx` | `DOCKER_HOST=<docker_socket_uri>` | `docker buildx version` |
+| `git` | none | `git --version` |
+
+Routing Docker probes through the configured socket URI ensures that remote or
+non-standard daemons are validated, not just the local default socket. Git is
+probed without the Docker environment because it does not communicate with the
+Docker daemon.
+
+When a Docker tool is unreachable, the error message includes the socket URI to
+aid debugging:
+
+```
+docker (via tcp://192.168.1.10:2376)
+docker buildx (via tcp://192.168.1.10:2376)
+```
+
+`verify_requirements` returns `CheckerError::MissingTool` for the first absent
+or unreachable tool.
+
+`ensure_singleton` writes a PID file to `/tmp/dockermint.lock`. If the file
+exists and the stored PID is a live process, it returns
+`CheckerError::AlreadyRunning`. Stale locks are silently removed. The returned
+`LockGuard` removes the file on drop.
+
+### Error Types
+
+| Error                          | When                                                              |
+| :----------------------------- | :---------------------------------------------------------------- |
+| `CheckerError::MissingTool`    | Required tool absent or unreachable (`docker`, `docker buildx`, `git`) |
+| `CheckerError::AlreadyRunning` | Another live Dockermint process holds the lock                    |
+| `CheckerError::CheckFailed`    | Lock file cannot be written                                       |
+| `CheckerError::Command`        | Tool probe command could not be spawned                           |
+
+---
+
+## `commands`
+
+**Purpose:** Async shell command execution with structured output capture.
+
+**Source:** `src/commands/mod.rs`
+
+### Public API
+
+```rust
+pub struct CommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub status: ExitStatus,
+}
+
+pub async fn execute(cmd: &str, args: &[&str]) -> Result<CommandOutput, CommandError>
+pub async fn execute_with_env(cmd: &str, args: &[&str], env: &HashMap<String, String>) -> Result<CommandOutput, CommandError>
+pub async fn execute_unchecked(cmd: &str, args: &[&str]) -> Result<CommandOutput, CommandError>
+pub async fn execute_unchecked_with_env(cmd: &str, args: &[&str], env: &HashMap<String, String>) -> Result<CommandOutput, CommandError>
+```
+
+`execute` treats non-zero exit as `CommandError::NonZeroExit`.
+`execute_unchecked` returns `CommandOutput` regardless of exit code.
+`execute_unchecked_with_env` combines both behaviors: it injects extra
+environment variables and returns `CommandOutput` regardless of exit code.
+
+:::info
+`execute` delegates to `execute_with_env` with an empty env map.
+`execute_unchecked` delegates to `execute_unchecked_with_env` with an empty
+env map. The checker uses `execute_unchecked_with_env` to probe Docker tools
+through `DOCKER_HOST` without treating a non-zero probe result as an error.
+:::
+
+### Error Types
+
+| Error                         | When                                    |
+| :---------------------------- | :-------------------------------------- |
+| `CommandError::Spawn`         | Process cannot be started               |
+| `CommandError::NonZeroExit`   | Process exits with status != 0          |
+| `CommandError::OutputCapture` | Reading stdout/stderr fails             |
+
+---
+
+## `config`
+
+**Purpose:** Load `config.toml`, validate settings, apply CLI overrides, and
+read `.env` secrets.
+
+**Source:** `src/config/mod.rs`, `src/config/types.rs`
+
+### Public API
+
+```rust
+pub fn load(path: &Path) -> Result<Config, ConfigError>
+pub fn load_default() -> Result<Config, ConfigError>
+pub fn validate(config: &Config) -> Result<(), ConfigError>
+pub fn apply_daemon_overrides(
+    config: &mut Config,
+    poll_interval: Option<u64>,
+    max_builds: Option<u32>,
+    rpc: bool,
+    rpc_bind: std::net::SocketAddr,
+)
+pub fn load_secrets() -> Secrets
+```
+
+`load` reads the file, calls `toml::from_str`, then calls `validate`
+automatically. `load_default` deserializes an empty string, producing a
+`Config` with all built-in defaults (no file required).
+
+`apply_daemon_overrides` is called after `load` in daemon mode. It creates the
+`[daemon]` section with defaults (`poll_interval_secs = 60`,
+`max_builds_per_cycle = 1`) if none was present, then applies any non-`None`
+CLI arguments on top. When `rpc = true`, it creates or updates the `[rpc]`
+section with the given bind address.
+
+`load_secrets` calls `dotenvy::dotenv()` (ignores a missing `.env`), then
+reads known environment variables into a `Secrets` struct. All sensitive
+values use `SecretString`.
+
+### Validation Rules
+
+`validate` enforces these constraints:
+
+| Rule                                            | Error                                              |
+| :---------------------------------------------- | :------------------------------------------------- |
+| `version` != 1                                  | `ConfigError::Invalid` — unsupported version       |
+| `recipes_dir` is absolute and does not exist    | `ConfigError::Invalid` — directory not found       |
+| `daemon.poll_interval_secs` == 0                | `ConfigError::Invalid` — must be > 0               |
+| `daemon.max_builds_per_cycle` == 0              | `ConfigError::Invalid` — must be > 0               |
+
+### Key Types
+
+- `Config` — top-level config struct (see [Configuration](./configuration)).
+- `DockerConfig` — `socket_uri` (`String`, default `unix:///var/run/docker.sock`)
+  and `builder_prefix` (`String`, default `dockermint`). Implements `Default`.
+- `Secrets` — holds `GH_USER`, `GH_PAT`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`,
+  `REGISTRY_USER`, `REGISTRY_PASSWORD` as `Option<SecretString>`.
+- `Mode` — enum: `Cli`, `Daemon`.
+
+### Error Types
+
+| Error                       | When                                      |
+| :-------------------------- | :---------------------------------------- |
+| `ConfigError::ReadFile`     | `config.toml` cannot be read from disk    |
+| `ConfigError::Parse`        | TOML deserialization fails                |
+| `ConfigError::Invalid`      | Semantic validation rule violated         |
+| `ConfigError::MissingField` | Required field absent                     |
+| `ConfigError::MissingEnvVar`| Required environment variable not set     |
+
+---
+
+## `logger`
+
+**Purpose:** Initialize the global `tracing` subscriber.
+
+**Source:** `src/logger/mod.rs`
+
+### Public API
+
+```rust
+pub fn init(config: &LogConfig) -> Result<(), Error>
+```
+
+Must be called exactly once at startup. Supports four output modes:
+
+| `directory` | `json` | Output                            |
+| :---------- | :----- | :-------------------------------- |
+| absent      | false  | Plain text to stdout              |
+| absent      | true   | JSON to stdout                    |
+| set         | false  | Plain text, daily rotating file   |
+| set         | true   | JSON, daily rotating file         |
+
+---
+
+## `recipe`
+
+**Purpose:** Parse recipe TOML files, resolve flavors, validate selections.
+
+**Source:** `src/recipe/mod.rs`, `src/recipe/types.rs`, `src/recipe/validation.rs`
+
+### Public API
+
+```rust
+pub fn load(path: &Path) -> Result<Recipe, RecipeError>
+pub fn load_all(dir: &Path) -> Result<HashMap<String, Recipe>, RecipeError>
+
+pub fn resolve_flavours(
+    recipe: &Recipe,
+    config_overrides: Option<&RecipeFlavourOverride>,
+    cli_overrides: Option<&HashMap<String, FlavorValue>>,
+) -> Result<SelectedFlavours, RecipeError>
+
+pub fn resolve(
+    recipe: Recipe,
+    config_overrides: Option<&RecipeFlavourOverride>,
+    cli_overrides: Option<&HashMap<String, FlavorValue>>,
+    host_variables: &HashMap<String, String>,
+) -> Result<ResolvedRecipe, RecipeError>
+```
+
+`resolve` builds the final `ResolvedRecipe` by combining flavor selections,
+expanding any `{{UPPERCASE}}` host-variable references inside flavor default
+values, injecting `binary_name`, and applying profile variable tables.
+
+### Key Types
+
+- `Recipe` — deserialized TOML file.
+- `SelectedFlavours` — dimension → `FlavorValue` map with `get_single`,
+  `get_multiple`, and `has_value` accessors.
+- `ResolvedRecipe` — `Recipe` + `SelectedFlavours` + `resolved_variables`.
+- `FlavorValue` — `Single(String)` | `Multiple(Vec<String>)`.
+
+`SelectedFlavours::has_value(value)` returns `true` if any active flavor
+selection (single or multi-value) equals `value`. This is the predicate used
+by the Dockerfile generator to evaluate `[[pre_build]]` conditions.
+
+### `recipe::host_vars`
+
+**Source:** `src/recipe/host_vars.rs`
+
+```rust
+pub fn collect(tag: &str, selected_flavours: &SelectedFlavours) -> HashMap<String, String>
+pub fn extend_from_env(vars: &mut HashMap<String, String>, keys: &[&str])
+```
+
+Collects host-level variables at Dockermint startup. All keys follow the
+`{{UPPERCASE}}` convention, except `repository_path`.
+
+| Variable                | Source                                                         |
+| :---------------------- | :------------------------------------------------------------- |
+| `HOST_ARCH`             | `std::env::consts::ARCH` mapped to `x86_64` or `aarch64`      |
+| `CREATION_TIMESTAMP`    | UTC ISO 8601 (`YYYY-MM-DDTHH:MM:SSZ`), no external crate; uses Howard Hinnant *civil_from_days* |
+| `SEMVER_TAG`            | Git tag passed as the `tag` argument                           |
+| `BUILD_TAGS_COMMA_SEP`  | Comma-joined `build_tags` flavor values (omitted when none)    |
+| `repository_path`       | Fixed as `/workspace`                                          |
+
+`extend_from_env` forwards additional process environment variables into the
+map. Missing variables are silently skipped.
+
+:::info
+The `repository_path` key uses lowercase naming despite being a host-time
+variable. This is intentional: it is a Dockermint-provided path constant, not
+a system environment variable.
+:::
+
+### Error Types
+
+| Error                              | When                                           |
+| :--------------------------------- | :--------------------------------------------- |
+| `RecipeError::ReadFile`            | TOML file cannot be read                       |
+| `RecipeError::Parse`               | TOML deserialization fails                     |
+| `RecipeError::IncompatibleFlavour` | Selected value not in `flavours.available`     |
+| `RecipeError::UnknownFlavour`      | Override references an unknown dimension       |
+| `RecipeError::UnsupportedSchema`   | Schema version exceeds current maximum (1)     |
+| `RecipeError::VersionMismatch`     | Recipe requires a newer Dockermint release     |
+
+---
+
+## `scrapper`
+
+**Purpose:** Fetch releases/tags from a VCS provider with glob filtering.
+
+**Source:** `src/scrapper/mod.rs`, `src/scrapper/github.rs`
+
+### Trait
+
+```rust
+pub trait VersionControlSystem: Send + Sync {
+    async fn fetch_releases(
+        &self,
+        repo_url: &str,
+        filter: &TagFilter,
+    ) -> Result<Vec<Release>, VcsError>;
+}
+```
+
+### Key Types
+
+```rust
+pub struct Release {
+    pub tag: String,
+    pub prerelease: bool,
+    pub published_at: Option<String>,
+}
+
+pub struct TagFilter {
+    pub include_patterns: String,  // comma-separated globs
+    pub exclude_patterns: String,  // comma-separated globs
+}
+```
+
+`TagFilter` uses `globset` for pattern matching. If `include_patterns` is
+empty, all tags pass. `exclude_patterns` takes precedence.
+
+### Default Implementation: `GithubClient` (feature: `github`)
+
+Source: `src/scrapper/github.rs`.
+
+```rust
+pub struct GithubClient { /* client: reqwest::Client, auth: Option<(String, SecretString)> */ }
+
+impl GithubClient {
+    pub fn new(user: Option<&str>, pat: Option<&str>) -> Result<Self, VcsError>
+}
+```
+
+<Tabs>
+  <TabItem value="auth" label="Authentication" default>
+
+`new` accepts optional `GH_USER` and `GH_PAT`. Both must be set together or
+both absent — providing only one returns `VcsError::Auth`. Credentials are
+stored as `(String, SecretString)` and transmitted via HTTP Basic Auth.
+Unauthenticated requests are subject to GitHub's lower public rate limit.
+
+  </TabItem>
+  <TabItem value="pagination" label="Pagination">
+
+`fetch_releases` pages through the GitHub Releases API at 100 releases per
+page, accumulating all results before applying glob filters. A page with fewer
+than 100 entries signals the last page.
+
+  </TabItem>
+  <TabItem value="url" label="URL parsing">
+
+`parse_owner_repo` extracts `owner/repo` from a full GitHub URL. Trailing
+slashes and `.git` suffixes are stripped.
+
+```
+https://github.com/cosmos/gaia        -> "cosmos/gaia"
+https://github.com/cosmos/gaia.git    -> "cosmos/gaia"
+https://github.com/KYVENetwork/chain/ -> "KYVENetwork/chain"
+```
+
+  </TabItem>
+  <TabItem value="glob" label="Glob filtering">
+
+Tag strings are matched with `globset`. Patterns in `TagFilter` are
+comma-separated. If `include_patterns` is empty all tags pass. `exclude_patterns`
+takes precedence over include.
+
+```toml title="recipe header"
+include_patterns = "v*"
+exclude_patterns = "*-rc*, *-alpha*"
+```
+
+  </TabItem>
+  <TabItem value="ratelimit" label="Rate limiting">
+
+HTTP `403` and `429` responses are treated as rate-limit errors. The
+`retry-after` header is read for the back-off hint; when absent, 60 seconds
+is used. The error is returned as `VcsError::RateLimit { retry_after_secs }`
+for the caller to decide when to retry.
+
+  </TabItem>
+</Tabs>
+
+### Error Types
+
+| Error               | When                                     |
+| :------------------ | :--------------------------------------- |
+| `VcsError::Request` | HTTP request fails or non-2xx status     |
+| `VcsError::Parse`   | Response body cannot be deserialized     |
+| `VcsError::Auth`    | Credentials rejected or inconsistent     |
+| `VcsError::RateLimit` | GitHub rate limit exceeded (`retry_after_secs` carries hint) |
+
+---
+
+## `builder`
+
+**Purpose:** Generate Dockerfiles, expand template variables, and run
+multi-arch builds via `docker buildx`.
+
+**Source:** `src/builder/mod.rs`, `src/builder/template.rs`,
+`src/builder/buildkit.rs`, `src/builder/dockerfile.rs`,
+`src/builder/go/mod.rs`
+
+### Trait
+
+```rust
+pub trait ImageBuilder: Send + Sync {
+    async fn setup_builders(&self) -> Result<(), BuilderError>;
+    async fn build(&self, context: &BuildContext) -> Result<BuildOutput, BuilderError>;
+    async fn cleanup(&self) -> Result<(), BuilderError>;
+}
+```
+
+### Key Types
+
+```rust
+pub struct BuildContext {
+    pub recipe: ResolvedRecipe,
+    pub tag: String,
+    pub variables: HashMap<String, String>,
+    pub platforms: Vec<String>,
+}
+
+pub struct BuildOutput {
+    pub image_id: String,
+    pub image_tag: String,
+    pub duration: Duration,
+    pub platforms: Vec<String>,
+}
+```
+
+`BuildContext::resolve_image_tag` expands the recipe's `image.tag` template
+using resolved variables.
+
+### TemplateEngine
+
+`builder::template::TemplateEngine` — stateless; all methods are associated
+functions.
+
+```rust
+pub fn render(template: &str, vars: &HashMap<String, String>) -> String
+pub fn unresolved_vars(s: &str) -> Vec<String>
+```
+
+Unknown `{{placeholders}}` are preserved in the output so callers can detect
+them.
+
+### Dockerfile Generator (`builder::dockerfile`)
+
+**Source:** `src/builder/dockerfile.rs`
+
+```rust
+pub fn generate(recipe: &ResolvedRecipe) -> Result<String, BuilderError>
+```
+
+Produces a complete multi-stage Dockerfile from a `ResolvedRecipe`. Fully
+data-driven — adding a new blockchain chain requires only a TOML file.
+
+<details>
+<summary>Stage 1 — builder</summary>
+
+1. `FROM <scrapper.image> AS builder`
+2. `RUN` merging scrapper install and builder install commands (distro
+   auto-detected: matches the longest `[builder.install]` key that is a
+   substring of the scrapper image name).
+3. `ARG` for each template variable referenced in `scrapper.env`, plus
+   `GIT_TAG`.
+4. `RUN git clone ...` per `scrapper.method`. `try-authenticated-clone`
+   attempts `${GH_USER}:${GH_PAT}@<host>`, falls back to public URL.
+5. `WORKDIR` + `RUN git checkout ${GIT_TAG}`.
+6. `ENV` for each entry in `[build.env]`.
+7. Conditional `[[pre_build]]` steps where `has_value(condition)` is `true`.
+8. `RUN <build_script>` dispatched by `header.type`.
+
+</details>
+
+<details>
+<summary>Stage 2 — runner</summary>
+
+The `running_env` flavor is mapped to a Docker image by `running_env_to_image`:
+split at the first digit boundary (`alpine3.23` → `alpine:3.23`); `bookworm`
+→ `debian:bookworm-slim`; `distroless` → `gcr.io/distroless/static-debian12`;
+full references pass through unchanged.
+
+1. `FROM <runner_image> AS runner`
+2. `RUN adduser/addgroup` (Alpine) or `useradd/groupadd` (other) if non-root;
+   skipped for distroless.
+3. `COPY --from=builder` for always-copied entries, then for conditional
+   entries matching active `binary_type`.
+4. `EXPOSE` all ports from `[expose]`.
+5. `LABEL` all entries from `[labels]`.
+6. `USER` if non-root.
+7. `ENTRYPOINT` for the entry with `type = "entrypoint"`.
+
+</details>
+
+Adding a new build system (not a new chain) requires one new match arm in
+`generate_build_command` and one new submodule.
+
+### Go Build Helpers (`builder::go`)
+
+**Source:** `src/builder/go/mod.rs`
+
+<Tabs>
+  <TabItem value="script" label="generate_build_script" default>
+
+```rust
+pub fn generate_build_script(recipe: &ResolvedRecipe) -> String
+```
+
+Produces the shell script body for the Dockerfile `RUN` instruction using a
+two-phase variable strategy:
+
+1. **Host-time expansion**: `TemplateEngine::render` expands `{{UPPERCASE}}`
+   references that are already in `resolved_variables`.
+2. **Shell conversion**: `template_to_shell` converts any surviving
+   `{{lowercase}}` placeholders to `$name` for shell interpolation at
+   container build time.
+
+Example output:
+
+```bash
+set -e; \
+    repo_commit=$(git log -1 --format='%H'); \
+    repo_version=$(git describe ...); \
+    go build -mod=readonly \
+      -tags=netgo,muslc \
+      -ldflags="... -X 'sdk/version.Version=$repo_version'" \
+      -o /go/bin/gaiad \
+      /workspace/cmd/gaiad
+```
+
+  </TabItem>
+  <TabItem value="shell" label="template_to_shell">
+
+```rust
+pub fn template_to_shell(s: &str) -> String
+```
+
+Converts `{{name}}` placeholders to `$name`. Used after a first pass of
+`TemplateEngine::render` so that only build-time variables remain for shell
+interpolation.
+
+```rust
+assert_eq!(template_to_shell("v={{version}}"), "v=$version");
+```
+
+  </TabItem>
+  <TabItem value="ldflags" label="build_ldflags">
+
+```rust
+pub fn build_ldflags(recipe: &ResolvedRecipe, variables: &HashMap<String, String>) -> String
+```
+
+Combines `[build.linker.flags]` for the active `binary_type` with `-X` flags
+from `[build.linker.variables]`. All template variables are fully expanded
+(no shell conversion). Used outside of Dockerfile generation contexts.
+
+  </TabItem>
+  <TabItem value="tags" label="build_tags">
+
+```rust
+pub fn build_tags(recipe: &ResolvedRecipe) -> String
+```
+
+Comma-separated build tags from the `build_tags` flavor. Non-`goleveldb`
+`db_backend` values are automatically appended (e.g. selecting `pebbledb`
+adds `pebbledb` to the tags string).
+
+  </TabItem>
+  <TabItem value="args" label="build_args">
+
+```rust
+pub fn build_args(recipe: &ResolvedRecipe, variables: &HashMap<String, String>) -> Vec<String>
+```
+
+Full `go build` argument vector: `-mod=readonly`, `-tags=...`, `-ldflags=...`,
+`-o /go/bin/<binary_name>`, build target path.
+
+  </TabItem>
+</Tabs>
+
+### Default Implementation: `BuildKitBuilder` (feature: `buildkit`)
+
+Source: `src/builder/buildkit.rs`.
+
+```rust
+pub struct BuildKitBuilder { /* docker_host, prefix, persist */ }
+
+impl BuildKitBuilder {
+    pub fn new(docker_host: String, prefix: String, persist: bool) -> Self
+}
+```
+
+<Tabs>
+  <TabItem value="setup" label="setup_builders()" default>
+
+Iterates over `[("linux/amd64", "amd64"), ("linux/arm64", "arm64")]` and
+creates each builder if it does not already exist:
+
+```bash
+docker buildx create --name <prefix>-amd64 --platform linux/amd64 --driver docker-container
+docker buildx inspect <prefix>-amd64 --bootstrap
+
+docker buildx create --name <prefix>-arm64 --platform linux/arm64 --driver docker-container
+docker buildx inspect <prefix>-arm64 --bootstrap
+```
+
+Bootstrap runs immediately so the first build does not stall waiting for the
+builder to start.
+
+  </TabItem>
+  <TabItem value="build" label="build()">
+
+1. Generates Dockerfile via `dockerfile::generate(&context.recipe)`.
+2. Writes it to `$TMPDIR/dockermint-build/Dockerfile`.
+3. Selects builder: multi-platform uses the `amd64` builder (QEMU handles
+   cross-compilation); single-platform picks the matching suffix.
+4. Runs:
+
+```bash
+docker buildx build \
+  --builder <name> \
+  --platform linux/amd64,linux/arm64 \
+  -f /tmp/dockermint-build/Dockerfile \
+  --build-arg GIT_TAG=<tag> \
+  --build-arg GH_USER=<user>   # if set in env
+  --build-arg GH_PAT=<token>   # if set in env
+  --load \
+  /tmp/dockermint-build
+```
+
+Returns `BuildOutput` with `image_id`, `image_tag`, `duration`, and
+`platforms`.
+
+  </TabItem>
+  <TabItem value="cleanup" label="cleanup()">
+
+| `persist` | Mode   | Behavior                                               |
+| :-------- | :----- | :----------------------------------------------------- |
+| `false`   | CLI    | Stops and removes builders, deletes temp build dir     |
+| `true`    | Daemon | Returns immediately — builders survive polling cycles  |
+
+CLI cleanup sequence:
+
+```bash
+docker buildx stop <prefix>-amd64 && docker buildx rm <prefix>-amd64
+docker buildx stop <prefix>-arm64 && docker buildx rm <prefix>-arm64
+rm -rf /tmp/dockermint-build
+```
+
+Cleanup is called unconditionally by `run_build()`, even when the build fails.
+
+  </TabItem>
+</Tabs>
+
+### Error Types
+
+| Error                             | When                                      |
+| :-------------------------------- | :---------------------------------------- |
+| `BuilderError::DockerfileGeneration` | Dockerfile template expansion fails   |
+| `BuilderError::BuildFailed`       | `docker buildx build` exits non-zero      |
+| `BuilderError::BuildxSetup`       | Builder instance creation fails           |
+| `BuilderError::UnresolvedVariable`| Template variable left unresolved         |
+| `BuilderError::Command`           | Subprocess cannot be spawned              |
+
+---
+
+## `push`
+
+**Purpose:** Authenticate with a container registry and push images.
+
+**Source:** `src/push/mod.rs`, `src/push/oci.rs`
+
+### Trait
+
+```rust
+pub trait RegistryClient: Send + Sync {
+    async fn authenticate(&self) -> Result<(), RegistryError>;
+    async fn push_image(&self, image: &str, tag: &str) -> Result<(), RegistryError>;
+    async fn tag_exists(&self, image: &str, tag: &str) -> Result<bool, RegistryError>;
+}
+```
+
+### Default Implementation: `OciRegistry` (feature: `oci`)
+
+Source: `src/push/oci.rs`.
+
+```rust
+pub struct OciRegistry { /* docker_host, registry_url */ }
+
+impl OciRegistry {
+    pub fn new(docker_host: String, registry_url: Option<String>) -> Self
+}
+```
+
+All operations inject `DOCKER_HOST` into the Docker CLI environment.
+
+<Tabs>
+  <TabItem value="auth" label="authenticate()" default>
+
+Reads `REGISTRY_USER` and `REGISTRY_PASSWORD` from the process environment. If
+either is absent, authentication is skipped silently.
+
+When both are present, the password is piped via stdin (never passed on the
+command line, so it never appears in process listings):
+
+```bash
+echo "$REGISTRY_PASSWORD" | docker login --username <user> --password-stdin [<registry>]
+```
+
+The registry argument is omitted when `registry_url` is `None` (Docker Hub).
+
+  </TabItem>
+  <TabItem value="push" label="push_image()">
+
+```bash
+docker push <image>:<tag>
+```
+
+A non-zero exit code is returned as `RegistryError::Push` with the full
+stderr captured.
+
+  </TabItem>
+  <TabItem value="exists" label="tag_exists()">
+
+```bash
+docker manifest inspect <image>:<tag>
+# exit 0  -> tag exists  -> returns Ok(true)
+# exit !0 -> not found   -> returns Ok(false)
+# spawn failure          -> returns Err(RegistryError::Query)
+```
+
+Uses a raw `tokio::process::Command` (not `execute_with_env`) so that a
+non-zero exit can be distinguished from a spawn failure.
+
+  </TabItem>
+</Tabs>
+
+### Configuration
+
+```toml
+[registry]
+url = "ghcr.io"   # absent = Docker Hub
+```
+
+### Error Types
+
+| Error                   | When                                    |
+| :---------------------- | :-------------------------------------- |
+| `RegistryError::Auth`   | Credentials rejected by registry        |
+| `RegistryError::Push`   | `docker push` fails                     |
+| `RegistryError::Query`  | Tag existence check fails               |
+| `RegistryError::Command`| Subprocess cannot be spawned            |
+
+---
+
+## `saver`
+
+**Purpose:** Persist and query build records.
+
+**Source:** `src/saver/mod.rs`, `src/saver/redb.rs`
+
+### Trait
+
+```rust
+pub trait Database: Send + Sync {
+    async fn save_build(&self, record: &BuildRecord) -> Result<(), DatabaseError>;
+    async fn get_build(&self, recipe: &str, tag: &str) -> Result<Option<BuildRecord>, DatabaseError>;
+    async fn list_builds(&self, recipe: &str) -> Result<Vec<BuildRecord>, DatabaseError>;
+    async fn is_built(&self, recipe: &str, tag: &str) -> Result<bool, DatabaseError>;
+}
+```
+
+### Key Types
+
+```rust
+pub struct BuildRecord {
+    pub recipe_name: String,
+    pub tag: String,
+    pub status: BuildStatus,
+    pub image_tag: Option<String>,
+    pub started_at: String,         // ISO-8601
+    pub completed_at: Option<String>,
+    pub duration_secs: Option<u64>,
+    pub error: Option<String>,
+    pub flavours: HashMap<String, String>,
+}
+
+pub enum BuildStatus { InProgress, Success, Failed }
+```
+
+### Default Implementation: `RedbDatabase` (feature: `redb`)
+
+Source: `src/saver/redb.rs`.
+
+```rust
+pub struct RedbDatabase { /* Arc<redb::Database> */ }
+
+impl RedbDatabase {
+    pub fn open(path: &Path) -> Result<Self, DatabaseError>
+}
+```
+
+<Tabs>
+  <TabItem value="storage" label="Storage layout" default>
+
+Records are stored in a single redb table named `"builds"`.
+
+| Field | Detail |
+| :---- | :----- |
+| Key   | `"{recipe_name}:{tag}"` — e.g. `"cosmos-gaiad:v21.0.1"` |
+| Value | JSON bytes of an internal `StoredRecord` flat struct |
+
+`BuildStatus` serializes as string literals: `"in_progress"`, `"success"`,
+`"failed"`.
+
+  </TabItem>
+  <TabItem value="open" label="Open / create">
+
+`open` creates parent directories automatically before opening the file.
+The `"builds"` table is initialized in a write transaction on first open
+so subsequent reads never encounter a missing table.
+
+  </TabItem>
+  <TabItem value="thread-safety" label="Thread safety">
+
+`RedbDatabase` wraps `redb::Database` in an `Arc`, making it
+`Clone + Send + Sync`. Multiple async tasks can hold a clone and call methods
+concurrently; redb serializes its own transactions.
+
+  </TabItem>
+  <TabItem value="crud" label="CRUD operations">
+
+| Method | Transaction | Notes |
+| :----- | :---------- | :---- |
+| `save_build` | write | Inserts or overwrites key |
+| `get_build` | read | Returns `None` when absent |
+| `list_builds` | read | Full-table prefix scan on `"recipe:"` |
+| `is_built` | read | Existence check only — any status, including `Failed` |
+
+:::info
+`is_built` returns `true` for any record regardless of status. A tag that
+previously failed is considered built and will not be retried automatically.
+:::
+
+  </TabItem>
+</Tabs>
+
+### Configuration
+
+```toml title="config.toml"
+[database]
+path = "data/dockermint.redb"
+```
+
+### Error Types
+
+| Error                           | When                                     |
+| :------------------------------ | :--------------------------------------- |
+| `DatabaseError::Open`           | Database file cannot be created/opened, or parent dir creation fails |
+| `DatabaseError::Read`           | Read transaction fails                   |
+| `DatabaseError::Write`          | Write transaction fails                  |
+| `DatabaseError::Serialization`  | Record serialization/deserialization fails |
+
+---
+
+## `notifier`
+
+**Purpose:** Send build lifecycle notifications to an external channel.
+
+**Source:** `src/notifier/mod.rs`, `src/notifier/telegram.rs`
+
+### Trait
+
+```rust
+pub trait Notifier: Send + Sync {
+    async fn notify_build_start(&self, recipe: &str, tag: &str) -> Result<(), NotifierError>;
+    async fn notify_build_success(&self, recipe: &str, tag: &str, duration: Duration) -> Result<(), NotifierError>;
+    async fn notify_build_failure(&self, recipe: &str, tag: &str, error: &str) -> Result<(), NotifierError>;
+}
+```
+
+:::warning
+Notification delivery is best-effort. Errors must be logged but must not
+abort a build.
+:::
+
+### Default Implementation: `TelegramNotifier` (feature: `telegram`)
+
+Source: `src/notifier/telegram.rs`.
+
+```rust
+pub struct TelegramNotifier { /* client: reqwest::Client, api_url: String, chat_id: String */ }
+
+impl TelegramNotifier {
+    pub fn new(token: &str, chat_id: &str) -> Result<Self, NotifierError>
+}
+```
+
+`new` validates that neither `token` nor `chat_id` is empty, then stores the
+constructed Bot API URL (`https://api.telegram.org/bot{token}/sendMessage`).
+Required secrets:
+
+| Variable           | Description                     |
+| :----------------- | :------------------------------ |
+| `TELEGRAM_TOKEN`   | Bot API token from BotFather    |
+| `TELEGRAM_CHAT_ID` | Chat ID where messages are sent |
+
+Enable in `config.toml`:
+
+```toml title="config.toml"
+[notifier]
+enabled = true
+```
+
+<Tabs>
+  <TabItem value="messages" label="Message formats" default>
+
+All messages use `parse_mode: "Markdown"`. Messages exceeding 4096 characters
+(Telegram's limit) are truncated at that boundary before sending.
+
+| Method | Markdown format |
+| :----- | :-------------- |
+| `notify_build_start` | `*Build started*\nRecipe: \`{recipe}\`\nTag: \`{tag}\`` |
+| `notify_build_success` | `*Build succeeded*\nRecipe: \`{recipe}\`\nTag: \`{tag}\`\nDuration: {secs}s` |
+| `notify_build_failure` | `*Build failed*\nRecipe: \`{recipe}\`\nTag: \`{tag}\`\nError: \`\`\`\n{error}\n\`\`\`` |
+
+  </TabItem>
+  <TabItem value="best-effort" label="Best-effort delivery">
+
+:::warning
+Notification delivery is best-effort. The daemon logs a warning on
+`NotifierError` but never propagates it to the caller. A Telegram outage
+does not interrupt builds.
+:::
+
+`init_notifier` is called once at daemon startup. It returns `None` when:
+
+- `config.notifier.enabled` is `false`
+- `TELEGRAM_TOKEN` or `TELEGRAM_CHAT_ID` is absent from the environment
+- `TelegramNotifier::new` returns an error
+
+When `None`, all `notify_*` calls become no-ops.
+
+  </TabItem>
+</Tabs>
+
+### Error Types
+
+| Error                   | When                                        |
+| :---------------------- | :------------------------------------------ |
+| `NotifierError::Send`   | HTTP delivery fails or Telegram API returns non-2xx |
+| `NotifierError::Config` | Token or chat ID is empty                   |
+
+---
+
+## `metrics`
+
+**Purpose:** Collect build metrics and expose them over HTTP.
+
+**Source:** `src/metrics/mod.rs`, `src/metrics/prometheus.rs`
+
+### Trait
+
+```rust
+pub trait MetricsCollector: Send + Sync {
+    fn record_build_start(&self, recipe: &str, tag: &str);
+    fn record_build_success(&self, recipe: &str, tag: &str, duration: Duration);
+    fn record_build_failure(&self, recipe: &str, tag: &str);
+    async fn serve(&self, addr: SocketAddr) -> Result<(), MetricsError>;
+}
+```
+
+The `record_*` methods are synchronous (non-blocking). `serve` starts an
+async HTTP server.
+
+### Default Implementation: `PrometheusCollector` (feature: `prometheus`)
+
+Exposes metrics in Prometheus text format over HTTP (via `axum` + `tower`).
+
+Scrape endpoint: `http://<bind>/metrics`
+
+### Configuration
+
+```toml
+[metrics]
+enabled = true
+bind    = "127.0.0.1:9200"
+```
+
+### Error Types
+
+| Error                        | When                                    |
+| :--------------------------- | :-------------------------------------- |
+| `MetricsError::Server`       | HTTP server fails to bind or serve      |
+| `MetricsError::Registration` | Metric registration fails at startup    |
+
+---
+
+## `cli`
+
+**Purpose:** Clap-based CLI definition with two subcommands.
+
+**Source:** `src/cli/mod.rs`, `src/cli/commands/mod.rs`,
+`src/cli/commands/build.rs`, `src/cli/commands/daemon.rs`
+
+### Public API
+
+```rust
+pub struct Cli {
+    pub config: Option<PathBuf>,   // --config / DOCKERMINT_CONFIG
+    pub log_level: Option<String>, // --log-level
+    pub command: Commands,
+}
+
+pub enum Commands {
+    Build(BuildArgs),
+    Daemon(DaemonArgs),
+}
+```
+
+### `BuildArgs`
+
+```rust
+pub struct BuildArgs {
+    pub recipe: PathBuf,                     // -r / --recipe
+    pub tag: String,                         // -t / --tag
+    pub platform: String,                    // -p / --platform [default: "linux/amd64"]
+    pub flavors: Vec<(String, FlavorValue)>, // -f / --flavor (repeatable)
+    pub push: bool,                          // --push
+}
+```
+
+Helper methods:
+- `flavor_overrides() -> HashMap<String, FlavorValue>` — converts the `flavors`
+  vec into a map for `recipe::resolve`.
+- `platforms() -> Vec<String>` — splits the `platform` string on commas.
+
+### `DaemonArgs`
+
+```rust
+pub struct DaemonArgs {
+    pub poll_interval: Option<u64>,  // -i / --poll-interval
+    pub max_builds: Option<u32>,     // -m / --max-builds
+    pub recipes: Vec<String>,        // -r / --recipes (file stems)
+    pub rpc: bool,                   // --rpc
+    pub rpc_bind: SocketAddr,        // --rpc-bind [default: 127.0.0.1:9100]
+}
+```
+
+`--rpc` enables the embedded HTTP server. `--rpc-bind` overrides the bind
+address from `[rpc].bind` in `config.toml`. Values are applied via
+`config::apply_daemon_overrides` before the daemon loop starts.
+
+:::tip
+`--rpc-bind` without `--rpc` has no effect — the HTTP server is only started
+when `--rpc` is present.
+:::
+
+---
+
+## `lib` — Mode Entry Points
+
+**Purpose:** Top-level async functions that wire all modules together for each
+operating mode.
+
+**Source:** `src/lib.rs`
+
+### `run_build()`
+
+```rust
+pub async fn run_build(config: Config, args: BuildArgs) -> Result<(), Error>
+```
+
+<Tabs>
+  <TabItem value="pipeline" label="Pipeline steps" default>
+
+| Step | Module | Action |
+| :--- | :----- | :----- |
+| 1 | `checker` | `verify_requirements(&config.docker.socket_uri)` — verify `docker`, `docker buildx` (via configured socket), and `git` |
+| 2 | `recipe` | Load and pre-resolve flavors to obtain `build_tags` |
+| 3 | `recipe::host_vars` | Collect `HOST_ARCH`, `SEMVER_TAG`, `BUILD_TAGS_COMMA_SEP`, `CREATION_TIMESTAMP`, `repository_path`; extend with `GH_USER`/`GH_PAT` from env |
+| 4 | `recipe` | Full `resolve()` with host vars, profile injection |
+| 5 | `builder` | `BuildKitBuilder::setup_builders()` — create `{prefix}-amd64` / `{prefix}-arm64` with `persist=false` |
+| 6 | `builder` | `BuildKitBuilder::build()` — generate Dockerfile, run `docker buildx build` |
+| 7 | `builder` | `BuildKitBuilder::cleanup()` — remove builders and temp dir (called even on build failure) |
+| 8 | `push` (optional) | `OciRegistry::authenticate()` then `push_image()` when `--push` is set |
+
+  </TabItem>
+  <TabItem value="errors" label="Error handling">
+
+`run_build()` follows the CLI unrecoverable error strategy: the first error
+that cannot be recovered returns `Err(Error)`, which `main.rs` logs and exits
+with a non-zero status.
+
+Builder cleanup (step 7) is called inside a separate error check so that a
+cleanup failure is logged but does not mask the original build error:
+
+```rust
+if let Err(e) = builder.cleanup().await {
+    tracing::error!(error = %e, "builder cleanup failed");
+}
+let output = result?;   // build error surfaces here
+```
+
+  </TabItem>
+</Tabs>
+
+### `run_daemon()`
+
+```rust
+pub async fn run_daemon(config: Config, args: DaemonArgs) -> Result<(), Error>
+```
+
+<Tabs>
+  <TabItem value="startup" label="Startup sequence" default>
+
+| Step | Module | Action |
+| :--- | :----- | :----- |
+| 1 | `checker` | `verify_requirements` — verify `docker`, `docker buildx`, `git` |
+| 2 | `saver` | `RedbDatabase::open` — open or create the database file |
+| 3 | `builder` | `BuildKitBuilder::new(persist=true)` + `setup_builders()` — create persistent buildx instances |
+| 4 | `notifier` | `init_notifier` — optional; `None` when disabled or credentials absent |
+| 5 | `scrapper` | `GithubClient::new` — reads `GH_USER`/`GH_PAT` via `config::load_secrets` |
+| 6 | `push` | `OciRegistry::new` — from `config.docker` and `config.registry` |
+
+Steps 1–5 are fatal: any error returns `Err(Error)` and exits the process.
+
+  </TabItem>
+  <TabItem value="loop" label="Poll loop">
+
+```
+loop {
+    select! {
+        SIGINT/SIGTERM -> break
+        daemon_cycle() -> continue
+    }
+    select! {
+        SIGINT/SIGTERM -> break
+        sleep(poll_interval_secs) -> continue
+    }
+}
+```
+
+The loop uses `tokio::select!` twice per iteration so that a shutdown signal
+received during either the active cycle or the sleep interval is handled
+immediately without waiting for the operation to complete.
+
+  </TabItem>
+  <TabItem value="cycle" label="daemon_cycle / process_recipe">
+
+**`daemon_cycle`**
+
+Loads all recipes with `recipe::load_all`. Applies `--recipes` filter when
+non-empty. Calls `process_recipe` per recipe; errors are logged, daemon
+continues.
+
+**`process_recipe`**
+
+1. Fetch releases from GitHub using the recipe's `repo`, `include_patterns`,
+   `exclude_patterns`.
+2. Skip tags already in DB (`is_built` — any status including `Failed`).
+3. Skip tags where the DB check itself errors (logged as a warning).
+4. Collect at most `max_builds_per_cycle` new tags.
+5. Call `build_tag` for each tag sequentially.
+
+  </TabItem>
+  <TabItem value="build" label="build_tag">
+
+Each tag is processed with full error containment. Any failure calls
+`finish_build_failed`, which saves `BuildStatus::Failed` and fires
+`notify_build_failure`.
+
+| Step | Action |
+| :--- | :----- |
+| 1 | `notify_build_start` (best-effort) |
+| 2 | Save `InProgress` record |
+| 3 | Resolve flavors + host variables |
+| 4 | `BuildKitBuilder::build` (`linux/amd64`, `linux/arm64`) |
+| 5 | `OciRegistry::authenticate` + `push_image` |
+| 6 | Save `Success` record with `image_tag`, `duration_secs`, `completed_at` |
+| 7 | `notify_build_success` (best-effort) |
+
+:::info
+Per the Daemon error strategy: individual build failures are logged, persisted,
+and notified. They do not stop the daemon. Only startup failures propagate as
+`Err(Error)`.
+:::
+
+  </TabItem>
+</Tabs>
+
+---
+
+## `error`
+
+**Purpose:** Central error type hierarchy.
+
+**Source:** `src/error.rs`
+
+The top-level `Error` enum aggregates all module errors via `#[from]`
+conversions, enabling `?` propagation across module boundaries:
+
+```rust
+pub enum Error {
+    Config(ConfigError),
+    Recipe(RecipeError),
+    Builder(BuilderError),
+    Vcs(VcsError),
+    Registry(RegistryError),
+    Database(DatabaseError),
+    Notifier(NotifierError),
+    Command(CommandError),
+    Checker(CheckerError),
+    Metrics(MetricsError),
+    Io(std::io::Error),
+}
+```
+
+All module-specific error types are derived with `thiserror` and implement
+`std::error::Error`.
