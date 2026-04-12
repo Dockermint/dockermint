@@ -1,0 +1,443 @@
+---
+id: configuration
+title: Configuration Reference
+sidebar_label: Configuration
+sidebar_position: 3
+description: Complete reference for config.toml settings, .env secrets, validation rules, and CLI argument overrides in Dockermint.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+Dockermint is configured through two inputs:
+
+- **`config.toml`** — all non-secret settings (paths, intervals, overrides).
+- **`.env`** — secrets (API tokens, credentials). Never committed to version
+  control.
+
+CLI arguments override values from `config.toml` for the fields they share.
+
+---
+
+## Locating `config.toml`
+
+<Tabs>
+  <TabItem value="default" label="Default (no config file)" default>
+
+All fields have built-in defaults. Running without any `config.toml` is valid:
+
+```bash
+dockermint build --recipe recipes/cosmos-gaiad.toml --tag v21.0.1
+```
+
+  </TabItem>
+  <TabItem value="flag" label="--config flag">
+
+```bash
+dockermint --config /etc/dockermint/config.toml build \
+  --recipe recipes/cosmos-gaiad.toml --tag v21.0.1
+```
+
+  </TabItem>
+  <TabItem value="env" label="DOCKERMINT_CONFIG">
+
+```bash
+export DOCKERMINT_CONFIG=/etc/dockermint/config.toml
+dockermint build --recipe recipes/cosmos-gaiad.toml --tag v21.0.1
+```
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Full `config.toml` Reference
+
+```toml title="config.toml"
+version     = 1
+recipes_dir = "recipes"
+
+[log]
+level       = "info"
+directory   = "/var/log/dockermint"
+file_prefix = "dockermint"
+json        = false
+
+[daemon]
+poll_interval_secs   = 60
+max_builds_per_cycle = 1
+
+[rpc]
+bind = "127.0.0.1:9100"
+
+[docker]
+socket_uri     = "unix:///var/run/docker.sock"
+builder_prefix = "dockermint"
+
+[database]
+path = "data/dockermint.redb"
+
+[notifier]
+enabled = false
+
+[vcs]
+max_concurrent_requests = 4
+
+[registry]
+url = "ghcr.io"
+
+[metrics]
+enabled = false
+bind    = "127.0.0.1:9200"
+
+[flavours.cosmos-gaiad]
+db_backend = "pebbledb"
+
+[flavours.kyve-kyved]
+build_tags = ["netgo", "muslc", "ledger"]
+network    = "mainnet"
+```
+
+---
+
+## Top-Level Fields
+
+| Field         | Type   | Default     | Description                                  |
+| :------------ | :----- | :---------- | :------------------------------------------- |
+| `version`     | `u32`  | `1`         | Config schema version. Must equal `1`.       |
+| `recipes_dir` | path   | `"recipes"` | Directory scanned for `.toml` recipe files   |
+
+---
+
+## `[log]`
+
+| Field         | Type   | Default        | Description                                                        |
+| :------------ | :----- | :------------- | :----------------------------------------------------------------- |
+| `level`       | string | `"info"`       | Minimum log level: `trace`, `debug`, `info`, `warn`, `error`       |
+| `directory`   | path   | absent         | If set, rotate daily log files here; otherwise emit to stdout      |
+| `file_prefix` | string | `"dockermint"` | Log file name prefix (e.g. `dockermint.2026-04-12`)                |
+| `json`        | bool   | `false`        | Emit structured JSON logs                                          |
+
+:::tip
+The `RUST_LOG` environment variable overrides `level` when present,
+following standard `tracing_subscriber` behaviour.
+:::
+
+---
+
+## `[daemon]`
+
+Only relevant for `dockermint daemon`. The section is optional — defaults apply
+when absent.
+
+| Field                  | Type  | Default | Validation  | Description                                     |
+| :--------------------- | :---- | :------ | :---------- | :---------------------------------------------- |
+| `poll_interval_secs`   | `u64` | `60`    | must be > 0 | Seconds between VCS polling cycles              |
+| `max_builds_per_cycle` | `u32` | `1`     | must be > 0 | Maximum tags built per recipe per polling cycle |
+
+CLI overrides take precedence:
+
+```bash
+dockermint daemon --poll-interval 30 --max-builds 2
+```
+
+---
+
+## `[rpc]`
+
+Controls the optional HTTP server that can run alongside the daemon. The server
+is only started when `dockermint daemon --rpc` is passed. The section is
+optional.
+
+| Field  | Type        | Default          | Description                          |
+| :----- | :---------- | :--------------- | :----------------------------------- |
+| `bind` | socket addr | `127.0.0.1:9100` | Address and port for the RPC server  |
+
+<Tabs>
+  <TabItem value="rpc-default" label="RPC on default address" default>
+
+```bash
+# Uses bind address from config.toml [rpc] (or 127.0.0.1:9100 if absent):
+dockermint daemon --rpc
+```
+
+  </TabItem>
+  <TabItem value="rpc-custom" label="RPC on custom address">
+
+```bash
+# --rpc-bind overrides [rpc].bind for this invocation:
+dockermint daemon --rpc --rpc-bind 0.0.0.0:9100
+```
+
+  </TabItem>
+</Tabs>
+
+:::info
+`--rpc-bind` requires `--rpc`. Passing `--rpc-bind` without `--rpc` has no
+effect.
+:::
+
+---
+
+## `[docker]`
+
+Controls the Docker daemon connection and the names of buildx builder instances
+created by `BuildKitBuilder`.
+
+| Field            | Type   | Default                         | Description                                                          |
+| :--------------- | :----- | :------------------------------ | :------------------------------------------------------------------- |
+| `socket_uri`     | string | `"unix:///var/run/docker.sock"` | Docker daemon socket URI. Use `tcp://host:port` for remote daemons.  |
+| `builder_prefix` | string | `"dockermint"`                  | Prefix for buildx builder names. Builders are `{prefix}-amd64` and `{prefix}-arm64`. |
+
+`socket_uri` is used in two places:
+
+1. **System requirements check** — at startup, `checker::verify_requirements`
+   probes `docker version` and `docker buildx version` via
+   `DOCKER_HOST=<socket_uri>`. A misconfigured URI is caught immediately, before
+   any build work begins, and the error message includes the URI to make remote
+   daemon issues obvious.
+2. **Build execution** — all `docker buildx` commands during builder setup,
+   build, and cleanup are routed through the same URI.
+
+<Tabs>
+  <TabItem value="local" label="Local daemon (default)" default>
+
+```toml title="config.toml"
+[docker]
+socket_uri     = "unix:///var/run/docker.sock"
+builder_prefix = "dockermint"
+```
+
+Creates `dockermint-amd64` and `dockermint-arm64` on the local Docker daemon.
+Both the startup check and all builds use this socket.
+
+  </TabItem>
+  <TabItem value="remote" label="Remote daemon">
+
+```toml title="config.toml"
+[docker]
+socket_uri     = "tcp://192.168.1.10:2376"
+builder_prefix = "myproject"
+```
+
+Creates `myproject-amd64` and `myproject-arm64` on the remote daemon.
+The startup requirements check also targets the remote daemon, confirming it is
+reachable before any build is attempted.
+
+  </TabItem>
+</Tabs>
+
+:::tip
+The `builder_prefix` lets you run multiple Dockermint instances (e.g. one per
+project) on the same Docker daemon without name collisions between builder
+instances.
+:::
+
+---
+
+## `[database]`
+
+| Field  | Type | Default                  | Description                      |
+| :----- | :--- | :----------------------- | :------------------------------- |
+| `path` | path | `"data/dockermint.redb"` | Path to the redb database file   |
+
+---
+
+## `[notifier]`
+
+| Field     | Type | Default | Description                          |
+| :-------- | :--- | :------ | :----------------------------------- |
+| `enabled` | bool | `false` | Whether to send build notifications  |
+
+Notifier credentials live in `.env` — see [Secrets](#env--secrets) below.
+
+---
+
+## `[vcs]`
+
+| Field                    | Type  | Default | Description                            |
+| :----------------------- | :---- | :------ | :------------------------------------- |
+| `max_concurrent_requests`| `u32` | `4`     | Maximum parallel GitHub API requests   |
+
+---
+
+## `[registry]`
+
+| Field | Type          | Default | Description                                         |
+| :---- | :------------ | :------ | :-------------------------------------------------- |
+| `url` | string (opt.) | absent  | Registry URL override. Absent or omitted = Docker Hub |
+
+Registry credentials live in `.env`.
+
+---
+
+## `[metrics]`
+
+| Field     | Type        | Default          | Description                                         |
+| :-------- | :---------- | :--------------- | :-------------------------------------------------- |
+| `enabled` | bool        | `false`          | Whether to start the metrics endpoint               |
+| `bind`    | socket addr | `127.0.0.1:9200` | Bind address for the Prometheus scrape endpoint     |
+
+Scrape endpoint: `http://<bind>/metrics`
+
+---
+
+## `[flavours.<recipe-stem>]`
+
+Per-recipe flavor overrides. The key is the recipe file stem (filename without
+`.toml`). These take precedence over recipe defaults but are overridden by CLI
+`--flavor` flags.
+
+```toml title="config.toml"
+[flavours.cosmos-gaiad]
+db_backend = "pebbledb"
+
+[flavours.kyve-kyved]
+build_tags = ["netgo", "muslc", "ledger"]
+network    = "mainnet"
+```
+
+---
+
+## `.env` — Secrets
+
+:::danger
+Never commit `.env` to version control. Add it to `.gitignore`. A reference
+template is provided at `.env.example`.
+:::
+
+Secrets are loaded from `.env` in the working directory via `dotenvy`. Missing
+variables become `None` — features that need them will fail only when they
+try to use them.
+
+| Variable             | Used by  | Description                                |
+| :------------------- | :------- | :----------------------------------------- |
+| `GH_USER`            | scrapper | GitHub username for authenticated clones   |
+| `GH_PAT`             | scrapper | GitHub personal access token               |
+| `TELEGRAM_TOKEN`     | notifier | Telegram Bot API token                     |
+| `TELEGRAM_CHAT_ID`   | notifier | Telegram chat ID for notifications         |
+| `REGISTRY_USER`      | push     | Container registry username                |
+| `REGISTRY_PASSWORD`  | push     | Container registry password or token       |
+
+```bash title=".env"
+GH_USER=myuser
+GH_PAT=ghp_xxxxxxxxxxxxxxxx
+TELEGRAM_TOKEN=123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TELEGRAM_CHAT_ID=-1001234567890
+REGISTRY_USER=myuser
+REGISTRY_PASSWORD=mytoken
+```
+
+All secret values are stored as `SecretString` internally and will never
+appear in logs or error messages.
+
+---
+
+## Validation Rules
+
+`config::validate` is called automatically by `config::load`. All failures
+return `ConfigError::Invalid`.
+
+| Rule                                            | Error message                                          |
+| :---------------------------------------------- | :----------------------------------------------------- |
+| `version` != 1                                  | `unsupported config version N, expected 1`             |
+| `recipes_dir` is absolute and does not exist    | `recipes directory does not exist: <path>`             |
+| `daemon.poll_interval_secs` == 0                | `daemon.poll_interval_secs must be > 0`                |
+| `daemon.max_builds_per_cycle` == 0              | `daemon.max_builds_per_cycle must be > 0`              |
+
+---
+
+## Configuration Loading Pipeline
+
+```
+1. CLI parses arguments (clap)
+2. config::load(path)  or  config::load_default()
+      -> reads file, toml::from_str, validate()
+3. config::load_secrets()
+      -> dotenvy::dotenv(), reads env vars into Secrets
+4. config::apply_daemon_overrides()   [daemon mode only]
+      -> CLI flags overwrite daemon.poll_interval_secs,
+         daemon.max_builds_per_cycle, rpc.bind
+```
+
+`apply_daemon_overrides` creates the `[daemon]` section with defaults
+(`poll_interval_secs = 60`, `max_builds_per_cycle = 1`) if none was present in
+`config.toml`, then applies CLI overrides on top.
+
+---
+
+## CLI Argument Reference
+
+<Tabs>
+  <TabItem value="global" label="Global flags" default>
+
+| Flag             | Env var             | Description                            |
+| :--------------- | :------------------ | :------------------------------------- |
+| `--config`, `-c` | `DOCKERMINT_CONFIG` | Path to `config.toml`                  |
+| `--log-level`    | —                   | Override log level for this invocation |
+
+  </TabItem>
+  <TabItem value="build" label="build">
+
+```bash
+dockermint build [OPTIONS]
+
+Options:
+  -r, --recipe <PATH>          Path to the recipe TOML file
+  -t, --tag <TAG>              Git tag to build
+  -p, --platform <PLATFORMS>   Target platforms, comma-separated [default: linux/amd64]
+  -f, --flavor <KEY=VALUE>     Flavor override (repeatable)
+      --push                   Push image to registry after building
+```
+
+Example:
+
+```bash
+dockermint build \
+  -r recipes/cosmos-gaiad.toml \
+  -t v21.0.1 \
+  --flavor db_backend=pebbledb \
+  --flavor build_tags=netgo,muslc,ledger \
+  --platform linux/amd64,linux/arm64 \
+  --push
+```
+
+  </TabItem>
+  <TabItem value="daemon" label="daemon">
+
+```bash
+dockermint daemon [OPTIONS]
+
+Options:
+  -i, --poll-interval <SECS>   Override polling interval in seconds
+  -m, --max-builds <N>         Max builds per cycle per recipe
+  -r, --recipes <STEM>...      Watch only these recipe file stems
+      --rpc                    Enable the RPC HTTP server alongside the daemon
+      --rpc-bind <ADDR>        RPC server bind address [default: 127.0.0.1:9100]
+```
+
+RPC examples:
+
+```bash
+# Daemon only:
+dockermint daemon
+
+# Daemon + RPC on default address:
+dockermint daemon --rpc
+
+# Daemon + RPC on custom address:
+dockermint daemon --rpc --rpc-bind 0.0.0.0:9100
+```
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Priority Order Summary
+
+For flavor selection, from lowest to highest priority:
+
+1. Recipe `[flavours.default]`
+2. `config.toml` `[flavours.<recipe-stem>]`
+3. `--flavor` CLI flags

@@ -1,0 +1,207 @@
+---
+id: features
+title: Feature Flags Reference
+sidebar_label: Feature Flags
+sidebar_position: 4
+description: All Dockermint compile-time feature flags — database, notifier, VCS, TLS, registry, builder, and metrics backends — with build examples.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+Dockermint uses Cargo feature flags to select backend implementations at
+compile time. Every replaceable module is gated behind a feature. At least one
+feature per module category must be enabled — if none is compiled in, the
+build fails with a descriptive `compile_error!` message.
+
+---
+
+## Default Feature Set
+
+Unless you pass `--no-default-features`, the following features are compiled:
+
+```toml title="Cargo.toml"
+[features]
+default = [
+    "redb",
+    "telegram",
+    "github",
+    "native-tls",
+    "oci",
+    "buildkit",
+    "prometheus",
+]
+```
+
+---
+
+## Feature Reference
+
+### Database backends
+
+| Feature | Dependency      | Implements | Description                       |
+| :------ | :-------------- | :--------- | :-------------------------------- |
+| `redb`  | `redb = "2"`    | `Database` | Embedded key-value store via redb |
+
+**Type alias when enabled:** `saver::SelectedDatabase = saver::redb::RedbDatabase`
+
+:::warning
+At least one database feature must be enabled, otherwise compilation fails with:
+`At least one database backend must be enabled (e.g. 'redb').`
+:::
+
+---
+
+### Notification backends
+
+| Feature    | Dependency       | Implements | Description                  |
+| :--------- | :--------------- | :--------- | :--------------------------- |
+| `telegram` | _(via reqwest)_  | `Notifier` | Telegram Bot API notification|
+
+**Type alias when enabled:** `notifier::SelectedNotifier = notifier::telegram::TelegramNotifier`
+
+Required secrets in `.env`:
+- `TELEGRAM_TOKEN`
+- `TELEGRAM_CHAT_ID`
+
+---
+
+### VCS backends
+
+| Feature  | Dependency       | Implements              | Description            |
+| :------- | :--------------- | :---------------------- | :--------------------- |
+| `github` | _(via reqwest)_  | `VersionControlSystem`  | GitHub REST API client |
+
+**Type alias when enabled:** `scrapper::SelectedVcs = scrapper::github::GithubClient`
+
+Optional secrets for authenticated requests (higher rate limits):
+- `GH_USER`
+- `GH_PAT`
+
+---
+
+### TLS backends
+
+Exactly one TLS feature must be selected for HTTPS support.
+
+| Feature      | Underlying              | Description                                                   |
+| :----------- | :---------------------- | :------------------------------------------------------------ |
+| `native-tls` | `reqwest/native-tls`    | OS TLS: OpenSSL on Linux, Secure Transport on macOS           |
+| `rustls-tls` | `reqwest/rustls-tls`    | Pure-Rust TLS — use for `*-musl` targets to avoid OpenSSL     |
+
+:::tip
+When targeting `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`,
+use `rustls-tls` to produce a fully static binary without OpenSSL.
+:::
+
+---
+
+### Registry backends
+
+| Feature | Dependency         | Implements       | Description                       |
+| :------ | :----------------- | :--------------- | :-------------------------------- |
+| `oci`   | _(via docker CLI)_ | `RegistryClient` | OCI push via `docker push`        |
+
+**Type alias when enabled:** `push::SelectedRegistry = push::oci::OciRegistry`
+
+---
+
+### Builder backends
+
+| Feature    | Dependency           | Implements     | Description                         |
+| :--------- | :------------------- | :------------- | :---------------------------------- |
+| `buildkit` | _(via docker CLI)_   | `ImageBuilder` | `docker buildx` multi-arch builds   |
+
+**Type alias when enabled:** `builder::SelectedBuilder = builder::buildkit::BuildKitBuilder`
+
+BuildKit creates per-platform builder instances named `dockermint-amd64` and
+`dockermint-arm64`.
+
+---
+
+### Metrics backends
+
+| Feature      | Dependencies                    | Implements         | Description                        |
+| :----------- | :------------------------------ | :----------------- | :--------------------------------- |
+| `prometheus` | `axum`, `tower`, `tower-http`   | `MetricsCollector` | Prometheus-format metrics over HTTP|
+
+**Type alias when enabled:** `metrics::SelectedMetrics = metrics::prometheus::PrometheusCollector`
+
+The metrics server binds to `127.0.0.1:9200` by default. Configure via
+`[metrics]` in `config.toml`.
+
+When `prometheus` is disabled, the `axum`, `tower`, and `tower-http`
+optional dependencies are not compiled in.
+
+---
+
+## Build Examples
+
+<Tabs>
+  <TabItem value="standard" label="Standard (all defaults)" default>
+
+```bash
+cargo build --release
+```
+
+  </TabItem>
+  <TabItem value="musl" label="musl static (no OpenSSL)">
+
+```bash
+cargo build --release \
+  --no-default-features \
+  --features redb,telegram,github,rustls-tls,oci,buildkit,prometheus \
+  --target x86_64-unknown-linux-musl
+```
+
+  </TabItem>
+  <TabItem value="minimal" label="Minimal (no metrics)">
+
+```bash
+# Note: omitting all metrics features currently triggers compile_error!
+# A no-op stub feature is planned for a future release.
+cargo build --release \
+  --no-default-features \
+  --features redb,telegram,github,native-tls,oci,buildkit,prometheus
+```
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Compile-Time Enforcement
+
+Each module with a replaceable backend has a guard like this one:
+
+```rust
+#[cfg(not(any(feature = "redb")))]
+compile_error!("At least one database backend must be enabled (e.g. 'redb').");
+```
+
+Disabling all features in a category produces a clear build error rather than
+a silently broken binary.
+
+---
+
+## Adding a Custom Backend
+
+The pattern is the same for every module. Using a custom database as an
+example:
+
+1. Add a feature in `Cargo.toml`:
+   ```toml
+   mydb = ["dep:mydb-crate"]
+   mydb-crate = { version = "1", optional = true }
+   ```
+2. Create `src/saver/mydb.rs` implementing `saver::Database`.
+3. Add the type alias:
+   ```rust
+   #[cfg(feature = "mydb")]
+   pub type SelectedDatabase = mydb::MyDatabase;
+   ```
+4. Extend the compile guard:
+   ```rust
+   #[cfg(not(any(feature = "redb", feature = "mydb")))]
+   compile_error!("At least one database backend must be enabled.");
+   ```
