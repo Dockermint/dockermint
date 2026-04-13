@@ -73,8 +73,9 @@ Do NOT commit broken code.
 
 - Review `git diff` and `git status` before staging.
 - Stage only files relevant to the current task.
-- Never stage `.env`, secrets, or AI-generated `.md` files (except `CLAUDE.md`).
+- Never stage `.env`, secrets, or other sensitive files.
 - Flag any `println!`, `dbg!`, `todo!`, or commented-out code found in the diff.
+- Flag any `#[allow(...)]` attribute outside `#[cfg(test)]` modules — this is a rule bypass violation.
 
 ### Committing
 
@@ -109,7 +110,7 @@ After every operation, return a concise report:
 - **Branch**: current branch name
 - **Commit**: hash + message (if committed)
 - **Files touched**: list
-- **Pre-commit checks**: all passed ✓ | failed (details)
+- **Pre-commit checks**: all passed | failed (details)
 ```
 
 ## What you must NEVER do

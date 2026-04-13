@@ -40,7 +40,8 @@ Scan every modified or new file for violations:
 - [ ] Hardcoded secrets, API keys, passwords, tokens
 - [ ] Tabs instead of 4-space indentation
 - [ ] Lines exceeding 100 characters
-- [ ] Emoji or unicode emulating emoji
+- [ ] Emoji or unicode emulating emoji (except in documentation and test code)
+- [ ] `#[allow(...)]` attributes outside `#[cfg(test)]` modules (anti-bypass rule)
 - [ ] Non-descriptive variable/function names
 - [ ] Missing doc-comments on public items
 - [ ] Catch-all `_` patterns where exhaustive matching is possible
@@ -114,7 +115,7 @@ Flag any new advisories or license violations.
 
 Classify every finding:
 
-- **CRITICAL**: Security vulnerability, secret exposure, data loss risk → blocks commit
+- **CRITICAL**: Security vulnerability, secret exposure, data loss risk, rule bypass (`#[allow(...)]` in prod) → blocks commit
 - **HIGH**: `.unwrap()` in prod code, missing error handling, unsafe without docs → blocks commit
 - **MEDIUM**: Missing doc-comments, suboptimal allocation, style violation → should fix
 - **LOW**: Minor style preference, naming suggestion → optional

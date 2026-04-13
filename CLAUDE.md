@@ -266,6 +266,56 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 - Use `cargo test` for running tests
 - Use `cargo doc` for generating documentation
 
+## Rule Integrity (Anti-Bypass)
+
+- **NEVER** use `#[allow(...)]`, `#[cfg_attr(..., allow(...))]`, or any attribute to suppress compiler warnings, clippy lints, or deny rules
+- **NEVER** use `#![allow(warnings)]`, `#![allow(clippy::...)]`, or crate-level suppression
+- **NEVER** add `// nolint`, `// noqa`, or equivalent suppression comments
+- **NEVER** restructure code solely to avoid a lint without fixing the underlying issue
+- **NEVER** bypass `cargo-deny` rules with `[advisories.ignore]`, `[bans.skip]`, or similar exceptions without explicit human approval
+- If a function exceeds 5 parameters, refactor into a config struct — do NOT add `#[allow(clippy::too_many_arguments)]`
+- If clippy warns about complexity, simplify the logic — do NOT add `#[allow(clippy::cognitive_complexity)]`
+- If a type name triggers a lint, rename it idiomatically — do NOT suppress with `#[allow(clippy::module_name_repetitions)]`
+- The only acceptable `#[allow(...)]` is `#[allow(dead_code)]` in `#[cfg(test)]` modules for test helpers
+- These rules apply to all agents and to the main conversation equally
+
+## Subagents
+
+Dockermint uses Claude Code subagents for separation of concerns. Subagents are
+defined in `.claude/agents/` and invoked via `@agent-name` or by automatic delegation.
+
+### Pipeline
+
+The standard workflow follows this pipeline:
+
+```
+@deps              →  @rust-implementer  →  @reviewer  →  @vcs
+fetch API docs        write + test code      audit code     commit
+(sonnet)              (opus)                 (haiku)        (haiku)
+```
+
+`@docs` and `@guardian` are invoked independently as needed.
+
+### Agent Responsibilities
+
+| Agent              | Model  | Role                                              | Writes code? | Writes git? |
+| :----------------- | :----- | :------------------------------------------------ | :----------- | :---------- |
+| `rust-implementer` | opus   | Implement, compile, test, lint                    | Yes          | No          |
+| `reviewer`         | haiku  | Read-only code audit, severity classification     | No           | No          |
+| `deps`             | sonnet | Dependency health, updates, API doc retrieval     | Cargo.toml   | No          |
+| `vcs`              | haiku  | Branch, stage, commit (Conventional Commits, GPG) | No           | Yes         |
+| `docs`             | sonnet | Markdown + MDX documentation generation           | Docs only    | No          |
+| `guardian`         | haiku  | CLAUDE.md retrocontrol, rule enforcement          | No           | No          |
+
+### Rules for All Agents
+
+- Every agent **MUST** read `CLAUDE.md` before starting work
+- No agent may modify files outside its declared scope
+- No agent may interact with git except `vcs`
+- No agent may relax or bypass any rule from this file
+- If an agent encounters a rule conflict, it must stop and report to the parent
+- The `guardian` agent can propose rule tightenings but **NEVER** relaxations
+
 ## Before Committing
 
 - [ ] All tests pass (`cargo test`)

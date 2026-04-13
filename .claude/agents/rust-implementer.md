@@ -111,6 +111,7 @@ Return a concise summary to the parent agent:
 - Never use `unsafe` unless absolutely required (document safety invariants).
 - Never use wildcard imports except in test modules (`use super::*`).
 - Never leave `println!`, `dbg!`, or commented-out code.
+- Never use `#[allow(...)]` to suppress warnings or lints (except `#[allow(dead_code)]` in `#[cfg(test)]` for test helpers). If a lint fires, fix the underlying issue.
 - 4 spaces indentation, 100-char line limit.
 - snake_case functions/variables, PascalCase types/traits, SCREAMING_SNAKE_CASE constants.
 - No emoji or unicode that emulates emoji.
