@@ -18,7 +18,19 @@ publish = false
 maintenance = { status = "actively-developed" }
 
 # ===========================================================================
+# Features
+# ===========================================================================
+
+[features]
+# Enable vendored OpenSSL for cross-compilation targets (musl, aarch64-gnu).
+# Pass --features openssl-vendored to statically link OpenSSL without a
+# system library requirement.
+openssl-vendored = ["openssl/vendored"]
+
+# ===========================================================================
 # Dependencies
 # ===========================================================================
 
 [dependencies]
+# TLS / SSL — optional, activated via the openssl-vendored feature gate.
+openssl = { version = "=0.10.77", optional = true }
