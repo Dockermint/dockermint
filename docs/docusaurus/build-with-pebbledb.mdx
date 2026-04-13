@@ -1,0 +1,301 @@
+---
+id: build-with-pebbledb
+title: Build with PebbleDB
+sidebar_label: PebbleDB Builds
+sidebar_position: 1
+description: How to compile a Cosmos SDK chain binary with PebbleDB support using Dockermint, including native support detection, patching older chains, and recipe TOML wiring.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+This guide explains how a Cosmos SDK chain gains PebbleDB support: when it is
+available natively, how to patch older chains that do not support it out of the
+box, and how to enable it at build time. It targets two audiences:
+
+- **Node operators** who want to understand what Dockermint does under the
+  hood when they select the `db_backend = "pebbledb"` flavor in a recipe.
+- **Dockermint contributors** working on the `builder` module or on new
+  recipes that need to expose PebbleDB as a flavor.
+
+For the full architecture specification, see the
+[PebbleDB spec](../specs/pebbledb).
+
+---
+
+## 1. Native support
+
+PebbleDB is supported natively starting with
+`github.com/cometbft/cometbft-db` **v0.10.0**.
+
+In practice, this corresponds to chains built on top of:
+
+- CometBFT **v0.38.0** or newer, and
+- Cosmos SDK **v0.50** or newer.
+
+Any chain whose `go.mod` already pins `cometbft-db >= v0.10.0` can be compiled
+with PebbleDB without any source-level patching: only the appropriate build
+tags and `ldflags` are required (see [section 3](#3-enabling-pebbledb-at-build-time)).
+
+Any chain pinning an older version of `cometbft-db`, or still relying on the
+legacy `github.com/tendermint/tm-db`, does not support PebbleDB natively and
+must be patched before compilation (see [section 2](#2-patching-older-chains)).
+
+---
+
+## 2. Patching older chains
+
+For chains that predate `cometbft-db v0.10.0`, PebbleDB support is available
+through community-maintained forks published by `notional-labs`. These forks
+are drop-in replacements, injected via `go mod edit -replace`.
+
+Run the following commands from the chain's Go module root (the directory
+containing `go.mod`) **before** running `go build`:
+
+```bash title="Inject notional-labs PebbleDB forks"
+# Always required for chains below cometbft-db v0.10.0
+go mod edit -replace \
+    github.com/cometbft/cometbft-db=github.com/notional-labs/cometbft-db@pebble
+
+# Required only if the chain still imports the legacy tm-db
+go mod edit -replace \
+    github.com/tendermint/tm-db=github.com/notional-labs/tm-db@v0.6.8-pebble
+
+# Required only if the chain imports github.com/cosmos/cosmos-db
+go mod edit -replace \
+    github.com/cosmos/cosmos-db=github.com/notional-labs/cosmos-db@pebble
+
+# Resolve the new dependency graph
+go mod tidy
+```
+
+:::tip Checking which directives to apply
+The three `replace` directives are independent. Apply only the ones that match
+modules actually imported by the chain:
+
+```bash
+grep -E 'cometbft-db|tm-db|cosmos-db' go.mod
+```
+:::
+
+### Notes on patching
+
+- The `@pebble` and `@v0.6.8-pebble` identifiers are branches and tags
+  maintained by `notional-labs` that carry the PebbleDB backend.
+- If a specific revision is required for reproducibility or to pick up a fix,
+  replace `@pebble` with an explicit commit hash or tag, for example
+  `@v0.11.0-pebble-1`.
+
+:::warning Community-maintained forks
+The `notional-labs` forks ship several branches and tags that are not always
+mutually compatible with every chain version. If `go mod tidy` or the build
+fails with resolution or API errors, try another tag (for example swap
+`@pebble` for `@v0.11.0-pebble-1`, `@v0.9.1-pebble`, or a specific commit
+hash) until a combination compiles cleanly against the target chain.
+
+Browse the available branches and tags directly at
+<https://github.com/notional-labs>.
+:::
+
+Once the `replace` directives are in place and `go mod tidy` has succeeded,
+the chain can be compiled exactly as a natively-supported chain.
+
+---
+
+## 3. Enabling PebbleDB at build time
+
+PebbleDB is gated behind a build tag. It must be enabled explicitly by passing
+both a build tag and an `ldflag` to `go build`.
+
+<Tabs>
+  <TabItem value="minimal" label="Minimal build" default>
+
+```bash title="Minimal go build with PebbleDB"
+go build \
+    -tags 'ledger,pebbledb' \
+    -ldflags "-X github.com/cosmos/cosmos-sdk/types.DBBackend=pebbledb" \
+    -o /path/to/output/binary \
+    ./cmd/<chain-daemon>
+```
+
+  </TabItem>
+  <TabItem value="release" label="Release build">
+
+```bash title="Full release build with PebbleDB"
+go build \
+    -mod=readonly \
+    -trimpath \
+    -tags 'ledger,pebbledb' \
+    -ldflags "\
+        -X github.com/cosmos/cosmos-sdk/version.Name=<chain-name> \
+        -X github.com/cosmos/cosmos-sdk/version.AppName=<daemon-name> \
+        -X github.com/cosmos/cosmos-sdk/version.Version=<git-tag> \
+        -X github.com/cosmos/cosmos-sdk/version.Commit=<git-commit> \
+        -X 'github.com/cosmos/cosmos-sdk/version.BuildTags=ledger,pebbledb' \
+        -X github.com/cosmos/cosmos-sdk/types.DBBackend=pebbledb" \
+    -o /usr/local/bin/<daemon-name> \
+    ./cmd/<daemon-name>
+```
+
+  </TabItem>
+</Tabs>
+
+What each flag does:
+
+- `-tags 'ledger,pebbledb'` compiles the PebbleDB code path into the binary.
+  The `ledger` tag is kept to preserve hardware wallet support; add any other
+  tags the chain normally requires.
+- `-ldflags "-X github.com/cosmos/cosmos-sdk/types.DBBackend=pebbledb"` sets
+  PebbleDB as the default backend baked into the binary, so a freshly
+  initialised node uses PebbleDB without any additional configuration.
+
+### Verifying the build
+
+After installing the resulting binary, confirm that PebbleDB is compiled in:
+
+```bash
+<daemon-name> version --long | grep -i build_tags
+```
+
+The output should contain `ledger,pebbledb`.
+
+### On-disk incompatibility
+
+:::warning Goleveldb and PebbleDB are not on-disk compatible
+Existing nodes switching from `goleveldb` must also update their `config.toml`
+(`db_backend = "pebbledb"`) and choose one of the following migration paths:
+
+1. Re-sync from genesis or a recent block height.
+2. Import a PebbleDB-format snapshot.
+3. Convert the existing `goleveldb` database with
+   [Pebblify](https://github.com/Dockermint/pebblify).
+
+Dockermint produces the binary with the correct backend compiled in, but does
+not perform database conversion itself.
+:::
+
+---
+
+## 4. Mapping to Dockermint
+
+All the steps above are performed by Dockermint's `builder` module whenever a
+recipe exposes `pebbledb` in its `[flavours.available]` section and the user
+selects it.
+
+### Flavor resolution
+
+Flavor resolution follows the precedence: **CLI arguments > `config.toml` > recipe defaults**.
+
+```toml title="recipes/<chain>.toml — flavor declaration"
+[flavours.available]
+db_backend = ["goleveldb", "pebbledb"]
+
+[flavours.default]
+db_backend = "goleveldb"
+```
+
+### How Dockermint applies the steps
+
+At build time, Dockermint resolves the selected `db_backend` flavor and:
+
+- Injects the required `go mod edit -replace` directives for chains that
+  predate native support, via conditional `[[pre_build]]` steps in the recipe.
+- Forwards the `pebbledb` build tag through the recipe's `build_tags` flavor
+  array.
+- Sets the `-X github.com/cosmos/cosmos-sdk/types.DBBackend=pebbledb` linker
+  variable through `[build.linker.variables]`, using the `{{db_backend}}`
+  template variable.
+
+The recipe author encodes knowledge of whether a chain needs patching. Chains
+with native support omit the `[[pre_build]]` patching steps entirely.
+
+### Recipe TOML examples
+
+<Tabs>
+  <TabItem value="native" label="Native support (cometbft-db >= v0.10.0)" default>
+
+```toml title="recipes/<chain>.toml — native PebbleDB"
+[flavours.available]
+db_backend = ["goleveldb", "pebbledb"]
+
+[flavours.default]
+db_backend = "goleveldb"
+
+[build.linker.variables]
+"github.com/cosmos/cosmos-sdk/types.DBBackend" = "{{db_backend}}"
+
+# No [[pre_build]] patching needed -- native support
+```
+
+  </TabItem>
+  <TabItem value="legacy" label="Legacy chain (patching required)">
+
+```toml title="recipes/<chain>.toml — legacy PebbleDB with patching"
+[flavours.available]
+db_backend = ["goleveldb", "pebbledb"]
+
+[flavours.default]
+db_backend = "goleveldb"
+
+# Applied ONLY when db_backend = "pebbledb" is selected
+[[pre_build]]
+condition = "pebbledb"
+instruction = "RUN"
+command = "go mod edit -replace github.com/cometbft/cometbft-db=github.com/notional-labs/cometbft-db@pebble"
+
+[[pre_build]]
+condition = "pebbledb"
+instruction = "RUN"
+command = "go mod edit -replace github.com/tendermint/tm-db=github.com/notional-labs/tm-db@v0.6.8-pebble"
+
+[[pre_build]]
+condition = "pebbledb"
+instruction = "RUN"
+command = "go mod tidy"
+
+[build.linker.variables]
+"github.com/cosmos/cosmos-sdk/types.DBBackend" = "{{db_backend}}"
+```
+
+:::note
+Include only the `go mod edit -replace` directives that match modules actually
+imported by the chain. The `go mod tidy` step must always follow any replace
+directives.
+:::
+
+  </TabItem>
+</Tabs>
+
+### Linker variable wiring
+
+The `{{db_backend}}` template variable resolves to whatever flavor value is
+selected at build time. This means the same `[build.linker.variables]` entry
+covers both `goleveldb` and `pebbledb` without any conditional Rust logic:
+
+```toml
+[build.linker.variables]
+"github.com/cosmos/cosmos-sdk/types.DBBackend" = "{{db_backend}}"
+```
+
+### Image tag differentiation
+
+To produce distinct image tags for different backends, include `{{db_backend}}`
+in the recipe's `[image]` tag template:
+
+```toml
+[image]
+tag = "chain-binary-{{db_backend}}:{{SEMVER_TAG}}-{{running_env}}"
+```
+
+---
+
+## 5. Summary
+
+1. Native support starts at `cometbft-db v0.10.0`
+   (CometBFT v0.38 / Cosmos SDK v0.50).
+2. Older chains must inject the `notional-labs` forks through
+   `go mod edit -replace` followed by `go mod tidy`.
+3. Enabling the backend is done at build time by adding the `pebbledb` build
+   tag and setting `types.DBBackend=pebbledb` via `-ldflags`.
+4. In Dockermint, all of the above is driven by selecting the `pebbledb` value
+   of the `db_backend` flavor in a recipe. No Rust code changes are required.
