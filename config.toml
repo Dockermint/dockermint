@@ -1,0 +1,130 @@
+# ============================================================================
+# Dockermint Configuration
+# ============================================================================
+# This file controls Dockermint's behavior across all modes (CLI, Daemon).
+# Secrets (API keys, tokens) MUST be stored in .env, never here.
+#
+# CLI arguments override values in this file.
+# ============================================================================
+
+version = 1
+
+# Directory containing recipe TOML files.
+recipes_dir = "recipes"
+
+# ============================================================================
+# Logging
+# ============================================================================
+
+[log]
+# Minimum log level: trace, debug, info, warn, error
+level = "info"
+
+# Directory for rotated log files. Comment out for stdout only.
+# directory = "logs"
+
+# Log file name prefix (used with directory).
+file_prefix = "dockermint"
+
+# Emit logs in JSON format (useful for log aggregators).
+json = false
+
+# ============================================================================
+# Daemon Mode
+# ============================================================================
+# Settings for `dockermint daemon`. Ignored in CLI mode.
+
+[daemon]
+# Seconds between VCS polling cycles.
+poll_interval_secs = 60
+
+# Maximum number of tags to build per polling cycle per recipe.
+max_builds_per_cycle = 1
+
+# ============================================================================
+# RPC Server
+# ============================================================================
+# Settings for the embedded HTTP server (enabled via `dockermint daemon --rpc`).
+
+[rpc]
+# Socket address to bind to.
+# Overridden by --rpc-bind flag if provided on command line.
+bind = "127.0.0.1:9100"
+
+# ============================================================================
+# Docker Engine
+# ============================================================================
+# Connection to the Docker daemon and buildx builder settings.
+
+[docker]
+# Docker daemon socket URI.
+# Use "tcp://host:port" for remote Docker daemons.
+socket_uri = "unix:///var/run/docker.sock"
+
+# Prefix for buildx builder instance names.
+# Builders are created as "{prefix}-amd64" and "{prefix}-arm64".
+builder_prefix = "dockermint"
+
+# ============================================================================
+# Per-Recipe Flavor Overrides
+# ============================================================================
+# Override default flavors for specific recipes. Keys are recipe file stems
+# (e.g. "cosmos-gaiad"). Values override the recipe's [flavours.default].
+#
+# Example:
+#   [flavours.cosmos-gaiad]
+#   db_backend = "pebbledb"
+#   build_tags = ["netgo", "muslc", "ledger"]
+#
+#   [flavours.kyve-kyved]
+#   network = "kaon"
+
+# ============================================================================
+# Database
+# ============================================================================
+# Build state persistence backend.
+
+[database]
+# Path to the database file.
+path = "data/dockermint.redb"
+
+# ============================================================================
+# Notifications
+# ============================================================================
+# Build status notification backend. Credentials in .env:
+#   TELEGRAM_TOKEN=<bot token>
+#   TELEGRAM_CHAT_ID=<chat id>
+
+[notifier]
+enabled = false
+
+# ============================================================================
+# Version Control System
+# ============================================================================
+# VCS provider settings. Credentials in .env:
+#   GH_USER=<username>
+#   GH_PAT=<personal access token>
+
+[vcs]
+# Maximum concurrent API requests to the VCS provider.
+max_concurrent_requests = 4
+
+# ============================================================================
+# Container Registry
+# ============================================================================
+# Registry for pushing built images. Credentials in .env:
+#   REGISTRY_USER=<username>
+#   REGISTRY_PASSWORD=<password or token>
+
+[registry]
+# Override registry URL. Comment out for Docker Hub.
+# url = "ghcr.io"
+
+# ============================================================================
+# Metrics
+# ============================================================================
+# Prometheus-compatible metrics endpoint.
+
+[metrics]
+enabled = false
+bind = "127.0.0.1:9200"

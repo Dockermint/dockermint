@@ -1,0 +1,42 @@
+name: Security Issue
+description: Report a non-critical security-related issue. For vulnerabilities, email it@dockermint.io instead.
+title: "[Security]: "
+labels: ["security"]
+type: Bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If you are reporting a vulnerability, do NOT use this template.**
+        Please email **it@dockermint.io** instead. See our [Security Policy](https://github.com/Dockermint/dockermint/blob/main/SECURITY.md).
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the security concern.
+    validations:
+      required: true
+  - type: textarea
+    id: affected-components
+    attributes:
+      label: Affected components
+      description: Which modules, dependencies, or workflows are concerned?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-fix
+    attributes:
+      label: Proposed fix
+      description: Any suggested fix or mitigation, if applicable.
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      description: Please confirm the following.
+      options:
+        - label: This is NOT a vulnerability report (those must go to it@dockermint.io)
+          required: true
+        - label: I agree to follow this project's [Code of Conduct](https://github.com/Dockermint/dockermint/blob/main/CODE_OF_CONDUCT.md)
+          required: true

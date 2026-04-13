@@ -1,0 +1,5 @@
+timeout_multiplier = 3.0
+minimum_test_timeout = 60.0
+exclude_globs = ["src/main.rs"]
+skip_calls_defaults = true
+gitignore = true

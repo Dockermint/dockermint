@@ -1,0 +1,54 @@
+language: en
+early_access: true
+
+reviews:
+  profile: "assertive"
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "develop"
+    ignore_title_patterns:
+      - "WIP"
+      - "Draft"
+      - "DO NOT MERGE"
+
+  high_level_summary: true
+  review_status: true
+  commit_status: true
+  sequence_diagrams: true
+  changed_files_summary: true
+  related_issues: true
+  request_changes_workflow: true
+
+  path_instructions:
+    - path: "src/**/*.rs"
+      instructions: |
+        Review for compliance with project conventions:
+        - No unwrap() in production paths, use expect() only for invariants
+        - Proper error handling with thiserror/anyhow
+        - Functions limited to 5 parameters
+        - No emoji or unicode emoji in code
+        - No println!/dbg! debug statements
+        - Prefer borrowing over ownership
+        - Use iterators over manual loops where clearer
+
+    - path: "recipes/**/*.toml"
+      instructions: |
+        Validate recipe structure and ensure all required fields are present.
+
+  path_filters:
+    - "!**/*.md"
+    - "!**/*.mdx"
+    - "!**/target/**"
+    - "!**/Cargo.lock"
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+    - "**/CLAUDE.md"
