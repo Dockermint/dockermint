@@ -1,3 +1,6 @@
+# Agent generated files
+.claude/agent-memory/
+
 # IDE files
 .vscode/
 .idea/
