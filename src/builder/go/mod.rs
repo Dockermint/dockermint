@@ -156,7 +156,8 @@ pub fn build_ldflags(recipe: &ResolvedRecipe, variables: &HashMap<String, String
         .iter()
         .map(|(path, val_template)| {
             let resolved = TemplateEngine::render(val_template, variables);
-            format!(" -X '{path}={resolved}'")
+            let shell_ready = template_to_shell(&resolved);
+            format!(" -X '{path}={shell_ready}'")
         })
         .collect();
 
@@ -605,6 +606,29 @@ mod tests {
         assert!(
             result.contains("-X 'main.AppName=myapp'"),
             "contains -X flag"
+        );
+    }
+
+    #[test]
+    fn build_ldflags_converts_unresolved_templates_to_shell_vars() {
+        let mut linker_vars = HashMap::new();
+        linker_vars.insert("main.Version".to_owned(), "{{repo_version}}".to_owned());
+
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            linker_variables: linker_vars,
+            ..Default::default()
+        });
+        // No variables provided, so {{repo_version}} stays unresolved
+        // after render and must become $repo_version via template_to_shell
+        let result = build_ldflags(&recipe, &HashMap::new());
+        assert!(
+            result.contains("-X 'main.Version=$repo_version'"),
+            "unresolved template must become shell var, got: {result}"
+        );
+        assert!(
+            !result.contains("{{repo_version}}"),
+            "template braces must not remain in ldflags"
         );
     }
 

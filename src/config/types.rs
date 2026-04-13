@@ -311,7 +311,7 @@ pub struct Secrets {
     pub telegram_token: Option<SecretString>,
 
     /// Telegram chat ID for notifications.
-    pub telegram_chat_id: Option<String>,
+    pub telegram_chat_id: Option<SecretString>,
 
     /// Container registry username.
     pub registry_user: Option<SecretString>,

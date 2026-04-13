@@ -12,9 +12,12 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
-use axum::http::header;
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
+use tower::ServiceBuilder;
+use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::TraceLayer;
 
 use crate::error::MetricsError;
 use crate::metrics::MetricsCollector;
@@ -110,7 +113,15 @@ impl MetricsCollector for PrometheusCollector {
     async fn serve(&self, addr: SocketAddr) -> Result<(), MetricsError> {
         let app = Router::new()
             .route("/metrics", get(metrics_handler))
-            .with_state(Arc::clone(&self.store));
+            .with_state(Arc::clone(&self.store))
+            .layer(
+                ServiceBuilder::new()
+                    .layer(TraceLayer::new_for_http())
+                    .layer(TimeoutLayer::with_status_code(
+                        StatusCode::REQUEST_TIMEOUT,
+                        Duration::from_secs(5),
+                    )),
+            );
 
         let listener = tokio::net::TcpListener::bind(addr)
             .await

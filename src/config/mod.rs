@@ -154,7 +154,7 @@ pub fn load_secrets() -> Secrets {
         gh_user: env_secret("GH_USER"),
         gh_pat: env_secret("GH_PAT"),
         telegram_token: env_secret("TELEGRAM_TOKEN"),
-        telegram_chat_id: std::env::var("TELEGRAM_CHAT_ID").ok(),
+        telegram_chat_id: env_secret("TELEGRAM_CHAT_ID"),
         registry_user: env_secret("REGISTRY_USER"),
         registry_password: env_secret("REGISTRY_PASSWORD"),
     }

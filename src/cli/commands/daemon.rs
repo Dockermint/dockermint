@@ -31,6 +31,6 @@ pub struct DaemonArgs {
     pub rpc: bool,
 
     /// Socket address for the RPC server (requires `--rpc`).
-    #[arg(long, default_value = "127.0.0.1:9100")]
+    #[arg(long, default_value = "127.0.0.1:9100", requires = "rpc")]
     pub rpc_bind: SocketAddr,
 }

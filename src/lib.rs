@@ -68,7 +68,7 @@ use std::collections::HashMap;
 
 use secrecy::ExposeSecret;
 
-use crate::builder::buildkit::BuildKitBuilder;
+use crate::builder::SelectedBuilder;
 use crate::builder::{BuildContext, ImageBuilder};
 use crate::cli::commands::build::BuildArgs;
 use crate::cli::commands::daemon::DaemonArgs;
@@ -76,9 +76,22 @@ use crate::config::types::Config;
 use crate::error::Error;
 use crate::notifier::Notifier;
 use crate::push::RegistryClient;
-use crate::push::oci::OciRegistry;
+use crate::push::SelectedRegistry;
 use crate::recipe::host_vars;
 use crate::saver::Database;
+
+/// Shared, immutable service references used throughout a daemon cycle.
+///
+/// Bundles all long-lived dependencies so that daemon helper functions
+/// stay within the 5-parameter limit prescribed by CLAUDE.md.
+struct DaemonServices<'a> {
+    config: &'a Config,
+    db: &'a saver::SelectedDatabase,
+    builder: &'a SelectedBuilder,
+    vcs_client: &'a scrapper::SelectedVcs,
+    registry: &'a SelectedRegistry,
+    notifier: Option<&'a notifier::SelectedNotifier>,
+}
 
 /// Execute a one-shot build (CLI mode).
 ///
@@ -129,8 +142,7 @@ pub async fn run_build(config: Config, args: BuildArgs) -> Result<(), Error> {
     // but resolve() needs host_vars. Two-step: pre-resolve flavours
     // to get build_tags, then collect host vars, then full resolve.
     let pre_flavours = recipe::resolve_flavours(&raw_recipe, config_overrides, cli_overrides_ref)?;
-    let mut hvars = host_vars::collect(&args.tag, &pre_flavours);
-    host_vars::extend_from_env(&mut hvars, &["GH_USER", "GH_PAT"]);
+    let hvars = host_vars::collect(&args.tag, &pre_flavours);
 
     let resolved = recipe::resolve(raw_recipe, config_overrides, cli_overrides_ref, &hvars)?;
 
@@ -141,7 +153,7 @@ pub async fn run_build(config: Config, args: BuildArgs) -> Result<(), Error> {
     );
 
     // 4. Set up builder (CLI mode: persist = false)
-    let builder = BuildKitBuilder::new(
+    let builder: SelectedBuilder = builder::buildkit::BuildKitBuilder::new(
         config.docker.socket_uri.clone(),
         config.docker.builder_prefix.clone(),
         false, // CLI mode: destroy builders after build
@@ -173,7 +185,7 @@ pub async fn run_build(config: Config, args: BuildArgs) -> Result<(), Error> {
 
     // 7. Push if requested
     if args.push {
-        let registry = OciRegistry::new(
+        let registry: SelectedRegistry = push::oci::OciRegistry::new(
             config.docker.socket_uri.clone(),
             config.registry.url.clone(),
         );
@@ -219,15 +231,18 @@ pub async fn run_build(config: Config, args: BuildArgs) -> Result<(), Error> {
 /// Returns [`Error`] on fatal startup failure.  Individual build
 /// failures are logged and persisted but do not stop the daemon.
 pub async fn run_daemon(config: Config, args: DaemonArgs) -> Result<(), Error> {
+    // 0. Enforce single instance
+    let _lock = checker::ensure_singleton()?;
+
     // 1. System check
     checker::verify_requirements(&config.docker.socket_uri).await?;
 
     // 2. Open database
-    let db = saver::redb::RedbDatabase::open(&config.database.path)?;
+    let db: saver::SelectedDatabase = saver::redb::RedbDatabase::open(&config.database.path)?;
     tracing::info!(path = %config.database.path.display(), "database opened");
 
     // 3. Persistent builders (survive across polling cycles)
-    let builder = BuildKitBuilder::new(
+    let builder: SelectedBuilder = builder::buildkit::BuildKitBuilder::new(
         config.docker.socket_uri.clone(),
         config.docker.builder_prefix.clone(),
         true, // daemon mode: persist builders
@@ -240,13 +255,13 @@ pub async fn run_daemon(config: Config, args: DaemonArgs) -> Result<(), Error> {
 
     // 5. Initialize VCS client
     let secrets = config::load_secrets();
-    let vcs_client = scrapper::github::GithubClient::new(
+    let vcs_client: scrapper::SelectedVcs = scrapper::github::GithubClient::new(
         secrets.gh_user.as_ref().map(|s| s.expose_secret()),
         secrets.gh_pat.as_ref().map(|s| s.expose_secret()),
     )?;
 
     // 6. Registry client
-    let registry = OciRegistry::new(
+    let registry: SelectedRegistry = push::oci::OciRegistry::new(
         config.docker.socket_uri.clone(),
         config.registry.url.clone(),
     );
@@ -277,6 +292,15 @@ pub async fn run_daemon(config: Config, args: DaemonArgs) -> Result<(), Error> {
             )))
         })?;
 
+    let services = DaemonServices {
+        config: &config,
+        db: &db,
+        builder: &builder,
+        vcs_client: &vcs_client,
+        registry: &registry,
+        notifier: notifier.as_ref(),
+    };
+
     loop {
         tokio::select! {
             _ = &mut shutdown => {
@@ -288,12 +312,7 @@ pub async fn run_daemon(config: Config, args: DaemonArgs) -> Result<(), Error> {
                 break;
             }
             _ = daemon_cycle(
-                &config,
-                &db,
-                &builder,
-                &vcs_client,
-                &registry,
-                notifier.as_ref(),
+                &services,
                 max_builds,
                 &recipe_filter,
             ) => {}
@@ -323,7 +342,7 @@ pub async fn run_daemon(config: Config, args: DaemonArgs) -> Result<(), Error> {
 
 /// Initialize the Telegram notifier if enabled and credentials are
 /// available.
-fn init_notifier(config: &Config) -> Option<notifier::telegram::TelegramNotifier> {
+fn init_notifier(config: &Config) -> Option<notifier::SelectedNotifier> {
     if !config.notifier.enabled {
         return None;
     }
@@ -347,19 +366,15 @@ fn init_notifier(config: &Config) -> Option<notifier::telegram::TelegramNotifier
 ///
 /// The `max_builds` budget is shared across all recipes in a single
 /// cycle, preventing one cycle from exceeding the configured limit.
-#[allow(clippy::too_many_arguments)]
-async fn daemon_cycle(
-    config: &Config,
-    db: &saver::redb::RedbDatabase,
-    builder: &BuildKitBuilder,
-    vcs_client: &scrapper::github::GithubClient,
-    registry: &OciRegistry,
-    notifier: Option<&notifier::telegram::TelegramNotifier>,
-    max_builds: u32,
-    recipe_filter: &[String],
-) {
+///
+/// # Arguments
+///
+/// * `services` - Shared daemon service references
+/// * `max_builds` - Maximum builds allowed in this cycle
+/// * `recipe_filter` - If non-empty, only build these recipe stems
+async fn daemon_cycle(services: &DaemonServices<'_>, max_builds: u32, recipe_filter: &[String]) {
     // Load all recipes
-    let recipes = match recipe::load_all(&config.recipes_dir) {
+    let recipes = match recipe::load_all(&services.config.recipes_dir) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "failed to load recipes");
@@ -380,18 +395,8 @@ async fn daemon_cycle(
             continue;
         }
 
-        if let Err(e) = process_recipe(
-            config,
-            db,
-            builder,
-            vcs_client,
-            registry,
-            notifier,
-            &mut remaining_budget,
-            recipe_stem,
-            raw_recipe,
-        )
-        .await
+        if let Err(e) =
+            process_recipe(services, &mut remaining_budget, recipe_stem, raw_recipe).await
         {
             tracing::error!(
                 recipe = recipe_stem,
@@ -406,14 +411,19 @@ async fn daemon_cycle(
 ///
 /// `remaining_budget` is decremented after each build. When it reaches
 /// zero, no more tags are built (across all recipes in the cycle).
-#[allow(clippy::too_many_arguments)]
+///
+/// # Arguments
+///
+/// * `services` - Shared daemon service references
+/// * `remaining_budget` - Mutable counter of remaining builds allowed
+/// * `recipe_stem` - Recipe file stem (e.g. `"cosmos-gaiad"`)
+/// * `raw_recipe` - Parsed recipe definition
+///
+/// # Errors
+///
+/// Returns [`Error`] on VCS fetch failures.
 async fn process_recipe(
-    config: &Config,
-    db: &saver::redb::RedbDatabase,
-    builder: &BuildKitBuilder,
-    vcs_client: &scrapper::github::GithubClient,
-    registry: &OciRegistry,
-    notifier: Option<&notifier::telegram::TelegramNotifier>,
+    services: &DaemonServices<'_>,
     remaining_budget: &mut u32,
     recipe_stem: &str,
     raw_recipe: &recipe::types::Recipe,
@@ -426,7 +436,8 @@ async fn process_recipe(
         exclude_patterns: raw_recipe.header.exclude_patterns.clone(),
     };
 
-    let releases = vcs_client
+    let releases = services
+        .vcs_client
         .fetch_releases(&raw_recipe.header.repo, &filter)
         .await?;
 
@@ -443,7 +454,7 @@ async fn process_recipe(
             break;
         }
 
-        match db.is_built(recipe_stem, &release.tag).await {
+        match services.db.is_built(recipe_stem, &release.tag).await {
             Ok(true) => {
                 tracing::trace!(
                     recipe = recipe_stem,
@@ -479,21 +490,10 @@ async fn process_recipe(
     );
 
     // Build each tag
-    let config_overrides = config.flavours.get(recipe_stem);
+    let config_overrides = services.config.flavours.get(recipe_stem);
 
     for tag in to_build {
-        build_tag(
-            config,
-            db,
-            builder,
-            registry,
-            notifier,
-            config_overrides,
-            recipe_stem,
-            raw_recipe,
-            tag,
-        )
-        .await;
+        build_tag(services, config_overrides, recipe_stem, raw_recipe, tag).await;
         *remaining_budget = remaining_budget.saturating_sub(1);
         if *remaining_budget == 0 {
             break;
@@ -507,13 +507,16 @@ async fn process_recipe(
 ///
 /// Errors are caught and saved to the database -- they do not
 /// propagate to the caller (daemon continues).
-#[allow(clippy::too_many_arguments)]
+///
+/// # Arguments
+///
+/// * `services` - Shared daemon service references
+/// * `config_overrides` - Per-recipe flavor overrides from config
+/// * `recipe_stem` - Recipe file stem (e.g. `"cosmos-gaiad"`)
+/// * `raw_recipe` - Parsed recipe definition
+/// * `tag` - Git tag to build
 async fn build_tag(
-    _config: &Config,
-    db: &saver::redb::RedbDatabase,
-    builder: &BuildKitBuilder,
-    registry: &OciRegistry,
-    notifier: Option<&notifier::telegram::TelegramNotifier>,
+    services: &DaemonServices<'_>,
     config_overrides: Option<&config::types::RecipeFlavourOverride>,
     recipe_stem: &str,
     raw_recipe: &recipe::types::Recipe,
@@ -524,7 +527,7 @@ async fn build_tag(
     tracing::info!(recipe = recipe_stem, tag, "build starting");
 
     // Notify start
-    if let Some(n) = notifier
+    if let Some(n) = services.notifier
         && let Err(e) = n.notify_build_start(recipe_stem, tag).await
     {
         tracing::warn!(error = %e, "start notification failed");
@@ -542,24 +545,31 @@ async fn build_tag(
         error: None,
         flavours: HashMap::new(),
     };
-    let _ = db.save_build(&record).await;
+    if let Err(e) = services.db.save_build(&record).await {
+        tracing::error!(
+            recipe = recipe_stem,
+            tag,
+            error = %e,
+            "failed to save in-progress build record, skipping tag"
+        );
+        return;
+    }
 
     // Resolve recipe
     let pre_flavours = match recipe::resolve_flavours(raw_recipe, config_overrides, None) {
         Ok(f) => f,
         Err(e) => {
-            finish_build_failed(db, notifier, &mut record, &e.to_string()).await;
+            finish_build_failed(services.db, services.notifier, &mut record, &e.to_string()).await;
             return;
         },
     };
 
-    let mut hvars = host_vars::collect(tag, &pre_flavours);
-    host_vars::extend_from_env(&mut hvars, &["GH_USER", "GH_PAT"]);
+    let hvars = host_vars::collect(tag, &pre_flavours);
 
     let resolved = match recipe::resolve(raw_recipe.clone(), config_overrides, None, &hvars) {
         Ok(r) => r,
         Err(e) => {
-            finish_build_failed(db, notifier, &mut record, &e.to_string()).await;
+            finish_build_failed(services.db, services.notifier, &mut record, &e.to_string()).await;
             return;
         },
     };
@@ -568,19 +578,31 @@ async fn build_tag(
     let platforms = vec!["linux/amd64".to_owned(), "linux/arm64".to_owned()];
     let context = BuildContext::new(resolved, tag.to_owned(), platforms);
 
-    match builder.build(&context).await {
+    match services.builder.build(&context).await {
         Ok(output) => {
             // Push
-            if let Err(e) = registry.authenticate().await {
-                finish_build_failed(db, notifier, &mut record, &format!("push auth: {e}")).await;
+            if let Err(e) = services.registry.authenticate().await {
+                finish_build_failed(
+                    services.db,
+                    services.notifier,
+                    &mut record,
+                    &format!("push auth: {e}"),
+                )
+                .await;
                 return;
             }
             let (img, img_tag) = output
                 .image_tag
                 .rsplit_once(':')
                 .unwrap_or((&output.image_tag, "latest"));
-            if let Err(e) = registry.push_image(img, img_tag).await {
-                finish_build_failed(db, notifier, &mut record, &format!("push: {e}")).await;
+            if let Err(e) = services.registry.push_image(img, img_tag).await {
+                finish_build_failed(
+                    services.db,
+                    services.notifier,
+                    &mut record,
+                    &format!("push: {e}"),
+                )
+                .await;
                 return;
             }
 
@@ -589,7 +611,14 @@ async fn build_tag(
             record.image_tag = Some(output.image_tag.clone());
             record.completed_at = Some(recipe::host_vars::utc_now());
             record.duration_secs = Some(output.duration.as_secs());
-            let _ = db.save_build(&record).await;
+            if let Err(e) = services.db.save_build(&record).await {
+                tracing::error!(
+                    recipe = recipe_stem,
+                    tag,
+                    error = %e,
+                    "failed to save successful build record"
+                );
+            }
 
             tracing::info!(
                 recipe = recipe_stem,
@@ -599,7 +628,7 @@ async fn build_tag(
                 "build succeeded"
             );
 
-            if let Some(n) = notifier
+            if let Some(n) = services.notifier
                 && let Err(e) = n
                     .notify_build_success(recipe_stem, tag, output.duration)
                     .await
@@ -608,22 +637,29 @@ async fn build_tag(
             }
         },
         Err(e) => {
-            finish_build_failed(db, notifier, &mut record, &e.to_string()).await;
+            finish_build_failed(services.db, services.notifier, &mut record, &e.to_string()).await;
         },
     }
 }
 
 /// Mark a build as failed: update the record, save to DB, notify.
 async fn finish_build_failed(
-    db: &saver::redb::RedbDatabase,
-    notifier: Option<&notifier::telegram::TelegramNotifier>,
+    db: &saver::SelectedDatabase,
+    notifier: Option<&notifier::SelectedNotifier>,
     record: &mut saver::BuildRecord,
     error: &str,
 ) {
     record.status = saver::BuildStatus::Failed;
     record.completed_at = Some(recipe::host_vars::utc_now());
     record.error = Some(error.to_owned());
-    let _ = db.save_build(record).await;
+    if let Err(e) = db.save_build(record).await {
+        tracing::error!(
+            recipe = record.recipe_name,
+            tag = record.tag,
+            error = %e,
+            "failed to save failed build record"
+        );
+    }
 
     tracing::error!(
         recipe = record.recipe_name,
