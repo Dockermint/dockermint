@@ -383,17 +383,31 @@ mod tests {
         }
     }
 
-    /// Build a recipe with specific flavours, linker config, and build path.
-    fn make_recipe_with(
-        binary_name: &str,
-        binary_type: Option<&str>,
-        db_backend: Option<&str>,
-        build_tags: Option<Vec<&str>>,
+    /// Config for building test recipes.
+    #[derive(Default)]
+    struct TestRecipeConfig<'a> {
+        binary_name: &'a str,
+        binary_type: Option<&'a str>,
+        db_backend: Option<&'a str>,
+        build_tags: Option<Vec<&'a str>>,
         linker_flags: HashMap<String, String>,
         linker_variables: HashMap<String, String>,
-        build_path: &str,
+        build_path: &'a str,
         variables: HashMap<String, crate::recipe::types::VariableDefinition>,
-    ) -> ResolvedRecipe {
+    }
+
+    /// Build a recipe with specific flavours, linker config, and build path.
+    fn make_recipe_with(cfg: TestRecipeConfig<'_>) -> ResolvedRecipe {
+        let TestRecipeConfig {
+            binary_name,
+            binary_type,
+            db_backend,
+            build_tags,
+            linker_flags,
+            linker_variables,
+            build_path,
+            variables,
+        } = cfg;
         use crate::recipe::types::*;
 
         let mut selections = HashMap::new();
@@ -464,46 +478,31 @@ mod tests {
 
     #[test]
     fn build_tags_with_multiple_tags() {
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            Some(vec!["netgo", "muslc"]),
-            HashMap::new(),
-            HashMap::new(),
-            "",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            build_tags: Some(vec!["netgo", "muslc"]),
+            ..Default::default()
+        });
         assert_eq!(build_tags(&recipe), "netgo,muslc");
     }
 
     #[test]
     fn build_tags_adds_non_default_db_backend() {
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            Some("pebbledb"),
-            None,
-            HashMap::new(),
-            HashMap::new(),
-            "",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            db_backend: Some("pebbledb"),
+            ..Default::default()
+        });
         assert_eq!(build_tags(&recipe), "pebbledb");
     }
 
     #[test]
     fn build_tags_skips_goleveldb() {
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            Some("goleveldb"),
-            None,
-            HashMap::new(),
-            HashMap::new(),
-            "",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            db_backend: Some("goleveldb"),
+            ..Default::default()
+        });
         assert!(
             build_tags(&recipe).is_empty(),
             "goleveldb must not appear in build tags"
@@ -512,16 +511,12 @@ mod tests {
 
     #[test]
     fn build_tags_combines_tags_and_db_backend() {
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            Some("pebbledb"),
-            Some(vec!["netgo"]),
-            HashMap::new(),
-            HashMap::new(),
-            "",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            db_backend: Some("pebbledb"),
+            build_tags: Some(vec!["netgo"]),
+            ..Default::default()
+        });
         let tags = build_tags(&recipe);
         assert!(tags.contains("netgo"), "must contain build_tags entry");
         assert!(tags.contains("pebbledb"), "must contain db_backend");
@@ -546,16 +541,11 @@ mod tests {
         flags.insert("dynamic".to_owned(), "-w -s".to_owned());
         flags.insert("static".to_owned(), "-linkmode=external".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            None, // no binary_type => defaults to "dynamic"
-            None,
-            None,
-            flags,
-            HashMap::new(),
-            "",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            linker_flags: flags,
+            ..Default::default()
+        });
         let result = build_ldflags(&recipe, &HashMap::new());
         assert_eq!(result, "-w -s");
     }
@@ -566,16 +556,12 @@ mod tests {
         flags.insert("dynamic".to_owned(), "-w -s".to_owned());
         flags.insert("static".to_owned(), "-linkmode=external -w -s".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            Some("static"),
-            None,
-            None,
-            flags,
-            HashMap::new(),
-            "",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            binary_type: Some("static"),
+            linker_flags: flags,
+            ..Default::default()
+        });
         let result = build_ldflags(&recipe, &HashMap::new());
         assert_eq!(result, "-linkmode=external -w -s");
     }
@@ -588,16 +574,11 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("VERSION".to_owned(), "v1.0.0".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            None,
-            HashMap::new(),
-            linker_vars,
-            "",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            linker_variables: linker_vars,
+            ..Default::default()
+        });
         let result = build_ldflags(&recipe, &vars);
         assert!(
             result.contains("-X 'main.Version=v1.0.0'"),
@@ -613,16 +594,12 @@ mod tests {
         let mut linker_vars = HashMap::new();
         linker_vars.insert("main.AppName".to_owned(), "myapp".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            None,
-            flags,
-            linker_vars,
-            "",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            linker_flags: flags,
+            linker_variables: linker_vars,
+            ..Default::default()
+        });
         let result = build_ldflags(&recipe, &HashMap::new());
         assert!(result.starts_with("-w -s"), "starts with base flags");
         assert!(
@@ -635,16 +612,11 @@ mod tests {
 
     #[test]
     fn build_args_minimal() {
-        let recipe = make_recipe_with(
-            "mybin",
-            None,
-            None,
-            None,
-            HashMap::new(),
-            HashMap::new(),
-            "./cmd/mybin",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "mybin",
+            build_path: "./cmd/mybin",
+            ..Default::default()
+        });
         let args = build_args(&recipe, &HashMap::new());
 
         assert_eq!(args[0], "build");
@@ -672,16 +644,12 @@ mod tests {
 
     #[test]
     fn build_args_includes_tags_when_present() {
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            Some(vec!["netgo", "muslc"]),
-            HashMap::new(),
-            HashMap::new(),
-            "./cmd/testd",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            build_tags: Some(vec!["netgo", "muslc"]),
+            build_path: "./cmd/testd",
+            ..Default::default()
+        });
         let args = build_args(&recipe, &HashMap::new());
         assert!(
             args.contains(&"-tags=netgo,muslc".to_owned()),
@@ -704,16 +672,12 @@ mod tests {
         let mut flags = HashMap::new();
         flags.insert("dynamic".to_owned(), "-w -s".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            None,
-            flags,
-            HashMap::new(),
-            "./cmd/testd",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            linker_flags: flags,
+            build_path: "./cmd/testd",
+            ..Default::default()
+        });
         let args = build_args(&recipe, &HashMap::new());
         assert!(
             args.iter().any(|a| a.starts_with("-ldflags=")),
@@ -730,16 +694,11 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("repo_path".to_owned(), "/workspace".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            None,
-            HashMap::new(),
-            HashMap::new(),
-            "{{repo_path}}/cmd/testd",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            build_path: "{{repo_path}}/cmd/testd",
+            ..Default::default()
+        });
         let args = build_args(&recipe, &vars);
         assert!(
             args.contains(&"/workspace/cmd/testd".to_owned()),
@@ -781,16 +740,12 @@ mod tests {
             },
         );
 
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            None,
-            HashMap::new(),
-            HashMap::new(),
-            "./cmd/testd",
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            build_path: "./cmd/testd",
             variables,
-        );
+            ..Default::default()
+        });
         let script = generate_build_script(&recipe);
         assert!(
             script.contains("repo_version=$(git describe --tags)"),
@@ -810,16 +765,11 @@ mod tests {
 
     #[test]
     fn generate_build_script_includes_output_binary() {
-        let recipe = make_recipe_with(
-            "mybin",
-            None,
-            None,
-            None,
-            HashMap::new(),
-            HashMap::new(),
-            "./cmd/mybin",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "mybin",
+            build_path: "./cmd/mybin",
+            ..Default::default()
+        });
         let script = generate_build_script(&recipe);
         assert!(
             script.contains("/go/bin/mybin"),
@@ -829,16 +779,12 @@ mod tests {
 
     #[test]
     fn generate_build_script_includes_tags_when_present() {
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            Some(vec!["netgo"]),
-            HashMap::new(),
-            HashMap::new(),
-            "./cmd/testd",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            build_tags: Some(vec!["netgo"]),
+            build_path: "./cmd/testd",
+            ..Default::default()
+        });
         let script = generate_build_script(&recipe);
         assert!(
             script.contains("-tags=netgo"),
@@ -861,16 +807,12 @@ mod tests {
         let mut flags = HashMap::new();
         flags.insert("dynamic".to_owned(), "-w -s".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            None,
-            flags,
-            HashMap::new(),
-            "./cmd/testd",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            linker_flags: flags,
+            build_path: "./cmd/testd",
+            ..Default::default()
+        });
         let script = generate_build_script(&recipe);
         assert!(
             script.contains("-ldflags=\"-w -s\""),
@@ -893,16 +835,12 @@ mod tests {
         let mut linker_vars = HashMap::new();
         linker_vars.insert("main.Version".to_owned(), "{{repo_version}}".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            None,
-            HashMap::new(),
-            linker_vars,
-            "./cmd/testd",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            linker_variables: linker_vars,
+            build_path: "./cmd/testd",
+            ..Default::default()
+        });
         let script = generate_build_script(&recipe);
         assert!(
             script.contains("$repo_version"),
@@ -922,16 +860,13 @@ mod tests {
         let mut linker_vars = HashMap::new();
         linker_vars.insert("main.Version".to_owned(), "hardcoded_val".to_owned());
 
-        let recipe = make_recipe_with(
-            "testd",
-            None,
-            None,
-            None,
-            flags,
-            linker_vars,
-            "./cmd/testd",
-            HashMap::new(),
-        );
+        let recipe = make_recipe_with(TestRecipeConfig {
+            binary_name: "testd",
+            linker_flags: flags,
+            linker_variables: linker_vars,
+            build_path: "./cmd/testd",
+            ..Default::default()
+        });
         let script = generate_build_script(&recipe);
         assert!(script.contains("-w -s"), "must include base linker flags");
         assert!(
