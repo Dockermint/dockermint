@@ -85,7 +85,7 @@ jobs:
       - name: Run mutation tests on diff
         run: cargo mutants --no-shuffle -vV --in-diff git.diff
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mutants.out
