@@ -569,4 +569,461 @@ mod tests {
         // Kyve has network profiles -> denom should be in ldflags
         assert!(dockerfile.contains("ukyve"), "mainnet denom injected");
     }
+
+    // ── running_env_to_image edge cases ─────────────────────────────
+
+    #[test]
+    fn running_env_to_image_passthrough_slash_only() {
+        // Image with `/` but no `:` still passes through
+        assert_eq!(
+            running_env_to_image("gcr.io/distroless/static"),
+            "gcr.io/distroless/static"
+        );
+    }
+
+    #[test]
+    fn running_env_to_image_passthrough_colon_only() {
+        // Image with `:` but no `/` still passes through
+        assert_eq!(running_env_to_image("alpine:3.18"), "alpine:3.18");
+    }
+
+    #[test]
+    fn running_env_to_image_unknown_name_passthrough() {
+        // An unrecognized non-versioned name returns itself unchanged
+        assert_eq!(running_env_to_image("scratch"), "scratch");
+    }
+
+    #[test]
+    fn running_env_to_image_empty_string() {
+        assert_eq!(running_env_to_image(""), "");
+    }
+
+    #[test]
+    fn running_env_to_image_digit_at_start() {
+        // Entire string starts with a digit: name is empty, version is all
+        assert_eq!(running_env_to_image("3alpine"), ":3alpine");
+    }
+
+    #[test]
+    fn running_env_to_image_bookworm_exact() {
+        // Verify the exact string returned for bookworm
+        assert_eq!(running_env_to_image("bookworm"), "debian:bookworm-slim");
+    }
+
+    #[test]
+    fn running_env_to_image_distroless_exact() {
+        assert_eq!(
+            running_env_to_image("distroless"),
+            "gcr.io/distroless/static-debian12"
+        );
+    }
+
+    // ── detect_install_command edge cases ────────────────────────────
+
+    #[test]
+    fn detect_install_command_longest_match_wins() {
+        let mut cmds = HashMap::new();
+        cmds.insert("alpine".to_owned(), "apk add --no-cache git".to_owned());
+        cmds.insert(
+            "alpine3.21".to_owned(),
+            "apk add --no-cache git make".to_owned(),
+        );
+
+        // "alpine3.21" is a longer match than "alpine"
+        let result = detect_install_command("golang:1.23-alpine3.21", &cmds);
+        assert_eq!(result, Some("apk add --no-cache git make"));
+    }
+
+    #[test]
+    fn detect_install_command_single_entry_match() {
+        let mut cmds = HashMap::new();
+        cmds.insert("debian".to_owned(), "apt-get install -y git".to_owned());
+
+        assert_eq!(
+            detect_install_command("debian:bookworm", &cmds),
+            Some("apt-get install -y git")
+        );
+    }
+
+    #[test]
+    fn detect_install_command_no_match_with_entries() {
+        let mut cmds = HashMap::new();
+        cmds.insert("alpine".to_owned(), "apk add git".to_owned());
+        cmds.insert("ubuntu".to_owned(), "apt-get install git".to_owned());
+
+        // Image contains neither "alpine" nor "ubuntu"
+        assert_eq!(detect_install_command("fedora:40", &cmds), None);
+    }
+
+    #[test]
+    fn detect_install_command_empty_image() {
+        let mut cmds = HashMap::new();
+        cmds.insert("alpine".to_owned(), "apk add git".to_owned());
+
+        assert_eq!(detect_install_command("", &cmds), None);
+    }
+
+    #[test]
+    fn detect_install_command_multiple_match_same_length() {
+        // Two keys of equal length both match: either is acceptable
+        let mut cmds = HashMap::new();
+        cmds.insert("abc".to_owned(), "cmd-abc".to_owned());
+        cmds.insert("bcd".to_owned(), "cmd-bcd".to_owned());
+
+        let result = detect_install_command("xabcdy", &cmds);
+        // Both "abc" and "bcd" match with length 3 -- we just need one
+        assert!(
+            result == Some("cmd-abc") || result == Some("cmd-bcd"),
+            "should return one of the equal-length matches"
+        );
+    }
+
+    // ── strip_protocol edge cases ───────────────────────────────────
+
+    #[test]
+    fn strip_protocol_http() {
+        assert_eq!(
+            strip_protocol("http://github.com/cosmos/gaia"),
+            "github.com/cosmos/gaia"
+        );
+    }
+
+    #[test]
+    fn strip_protocol_no_protocol() {
+        assert_eq!(
+            strip_protocol("github.com/cosmos/gaia"),
+            "github.com/cosmos/gaia"
+        );
+    }
+
+    #[test]
+    fn strip_protocol_empty() {
+        assert_eq!(strip_protocol(""), "");
+    }
+
+    #[test]
+    fn strip_protocol_https_preserves_remainder() {
+        // Ensure it only strips the prefix, not any other occurrence
+        assert_eq!(
+            strip_protocol("https://example.com/https://nested"),
+            "example.com/https://nested"
+        );
+    }
+
+    // ── user_creation_command exact output ───────────────────────────
+
+    #[test]
+    fn user_creation_command_alpine_exact_format() {
+        let cfg = crate::recipe::types::UserConfig {
+            username: "node".to_owned(),
+            uid: 500,
+            gid: 600,
+        };
+        let cmd = user_creation_command("alpine3.20", &cfg).expect("should produce command");
+        assert_eq!(
+            cmd,
+            "addgroup -g 600 node && adduser -u 500 -G node -D node"
+        );
+    }
+
+    #[test]
+    fn user_creation_command_debian_exact_format() {
+        let cfg = crate::recipe::types::UserConfig {
+            username: "node".to_owned(),
+            uid: 500,
+            gid: 600,
+        };
+        let cmd = user_creation_command("bookworm", &cfg).expect("should produce command");
+        assert_eq!(cmd, "groupadd -g 600 node && useradd -u 500 -g 600 -M node");
+    }
+
+    #[test]
+    fn user_creation_command_alpine_different_uid_gid() {
+        let cfg = crate::recipe::types::UserConfig {
+            username: "val".to_owned(),
+            uid: 1234,
+            gid: 5678,
+        };
+        let cmd = user_creation_command("alpine3.18", &cfg).expect("should produce command");
+        // Verify uid and gid appear in correct positions
+        assert_eq!(cmd, "addgroup -g 5678 val && adduser -u 1234 -G val -D val");
+    }
+
+    #[test]
+    fn user_creation_command_debian_different_uid_gid() {
+        let cfg = crate::recipe::types::UserConfig {
+            username: "val".to_owned(),
+            uid: 1234,
+            gid: 5678,
+        };
+        let cmd = user_creation_command("ubuntu24.04", &cfg).expect("should produce command");
+        assert_eq!(
+            cmd,
+            "groupadd -g 5678 val && useradd -u 1234 -g 5678 -M val"
+        );
+    }
+
+    #[test]
+    fn user_creation_command_distroless_with_prefix() {
+        // Anything containing "distroless" returns None
+        let cfg = crate::recipe::types::UserConfig {
+            username: "cosmos".to_owned(),
+            uid: 1000,
+            gid: 1000,
+        };
+        assert_eq!(
+            user_creation_command("gcr.io/distroless/base-debian12", &cfg),
+            None
+        );
+    }
+
+    // ── DockerfileWriter method tests ───────────────────────────────
+
+    #[test]
+    fn writer_separator_produces_comment_line() {
+        let mut w = DockerfileWriter::new();
+        w.separator();
+        let output = w.build();
+        assert_eq!(
+            output,
+            "# ================================================================\n"
+        );
+    }
+
+    #[test]
+    fn writer_comment_prefixes_with_hash() {
+        let mut w = DockerfileWriter::new();
+        w.comment("Stage 1");
+        let output = w.build();
+        assert_eq!(output, "# Stage 1\n");
+    }
+
+    #[test]
+    fn writer_blank_produces_empty_line() {
+        let mut w = DockerfileWriter::new();
+        w.comment("before");
+        w.blank();
+        w.comment("after");
+        let output = w.build();
+        assert_eq!(output, "# before\n\n# after\n");
+    }
+
+    #[test]
+    fn writer_emit_from() {
+        let mut w = DockerfileWriter::new();
+        w.emit_from("golang:1.23-alpine", "builder");
+        let output = w.build();
+        assert_eq!(output, "FROM golang:1.23-alpine AS builder\n");
+    }
+
+    #[test]
+    fn writer_run() {
+        let mut w = DockerfileWriter::new();
+        w.run("apk add git");
+        let output = w.build();
+        assert_eq!(output, "RUN apk add git\n");
+    }
+
+    #[test]
+    fn writer_env_var() {
+        let mut w = DockerfileWriter::new();
+        w.env_var("CGO_ENABLED", "1");
+        let output = w.build();
+        assert_eq!(output, "ENV CGO_ENABLED=1\n");
+    }
+
+    #[test]
+    fn writer_workdir() {
+        let mut w = DockerfileWriter::new();
+        w.workdir("/workspace");
+        let output = w.build();
+        assert_eq!(output, "WORKDIR /workspace\n");
+    }
+
+    #[test]
+    fn writer_arg_without_default() {
+        let mut w = DockerfileWriter::new();
+        w.arg("GIT_TAG", None);
+        let output = w.build();
+        assert_eq!(output, "ARG GIT_TAG\n");
+    }
+
+    #[test]
+    fn writer_arg_with_default() {
+        let mut w = DockerfileWriter::new();
+        w.arg("VERSION", Some("latest"));
+        let output = w.build();
+        assert_eq!(output, "ARG VERSION=latest\n");
+    }
+
+    #[test]
+    fn writer_copy_from() {
+        let mut w = DockerfileWriter::new();
+        w.copy_from("builder", "/go/bin/app", "/usr/bin/app");
+        let output = w.build();
+        assert_eq!(output, "COPY --from=builder /go/bin/app /usr/bin/app\n");
+    }
+
+    #[test]
+    fn writer_add() {
+        let mut w = DockerfileWriter::new();
+        w.add("https://example.com/file.tar.gz", "/tmp/");
+        let output = w.build();
+        assert_eq!(output, "ADD https://example.com/file.tar.gz /tmp/\n");
+    }
+
+    #[test]
+    fn writer_expose_single_port() {
+        let mut w = DockerfileWriter::new();
+        w.expose(&[8080]);
+        let output = w.build();
+        assert_eq!(output, "EXPOSE 8080\n");
+    }
+
+    #[test]
+    fn writer_expose_multiple_ports() {
+        let mut w = DockerfileWriter::new();
+        w.expose(&[26656, 26657, 1317, 9090]);
+        let output = w.build();
+        assert_eq!(output, "EXPOSE 26656 26657 1317 9090\n");
+    }
+
+    #[test]
+    fn writer_label() {
+        let mut w = DockerfileWriter::new();
+        w.label(
+            "org.opencontainers.image.source",
+            "https://github.com/cosmos/gaia",
+        );
+        let output = w.build();
+        assert_eq!(
+            output,
+            "LABEL org.opencontainers.image.source=\"https://github.com/cosmos/gaia\"\n"
+        );
+    }
+
+    #[test]
+    fn writer_user() {
+        let mut w = DockerfileWriter::new();
+        w.user("cosmos");
+        let output = w.build();
+        assert_eq!(output, "USER cosmos\n");
+    }
+
+    #[test]
+    fn writer_user_numeric() {
+        let mut w = DockerfileWriter::new();
+        w.user("1000");
+        let output = w.build();
+        assert_eq!(output, "USER 1000\n");
+    }
+
+    #[test]
+    fn writer_entrypoint_single_arg() {
+        let mut w = DockerfileWriter::new();
+        w.entrypoint(&["/usr/bin/gaiad"]);
+        let output = w.build();
+        assert_eq!(output, "ENTRYPOINT [\"/usr/bin/gaiad\"]\n");
+    }
+
+    #[test]
+    fn writer_entrypoint_multiple_args() {
+        let mut w = DockerfileWriter::new();
+        w.entrypoint(&["/usr/bin/gaiad", "start", "--home=/data"]);
+        let output = w.build();
+        assert_eq!(
+            output,
+            "ENTRYPOINT [\"/usr/bin/gaiad\", \"start\", \"--home=/data\"]\n"
+        );
+    }
+
+    #[test]
+    fn writer_raw() {
+        let mut w = DockerfileWriter::new();
+        w.raw("HEALTHCHECK CMD curl -f http://localhost/ || exit 1");
+        let output = w.build();
+        assert_eq!(
+            output,
+            "HEALTHCHECK CMD curl -f http://localhost/ || exit 1\n"
+        );
+    }
+
+    #[test]
+    fn writer_build_trailing_newline() {
+        let w = DockerfileWriter::new();
+        let output = w.build();
+        assert_eq!(output, "\n", "empty writer produces single newline");
+    }
+
+    #[test]
+    fn writer_build_multi_line_ordering() {
+        let mut w = DockerfileWriter::new();
+        w.emit_from("alpine:3.23", "runner");
+        w.run("apk add curl");
+        w.user("app");
+        w.entrypoint(&["/bin/app"]);
+        let output = w.build();
+        assert_eq!(
+            output,
+            "FROM alpine:3.23 AS runner\n\
+             RUN apk add curl\n\
+             USER app\n\
+             ENTRYPOINT [\"/bin/app\"]\n"
+        );
+    }
+
+    // ── generate_clone_commands ──────────────────────────────────────
+
+    #[test]
+    fn clone_commands_public_method() {
+        let mut df = DockerfileWriter::new();
+        generate_clone_commands(&mut df, "https://github.com/cosmos/gaia", "public");
+        let output = df.build();
+        assert_eq!(
+            output,
+            "RUN git clone https://github.com/cosmos/gaia /workspace\n"
+        );
+    }
+
+    #[test]
+    fn clone_commands_try_authenticated() {
+        let mut df = DockerfileWriter::new();
+        generate_clone_commands(
+            &mut df,
+            "https://github.com/cosmos/gaia",
+            "try-authenticated-clone",
+        );
+        let output = df.build();
+        assert!(
+            output.contains("--mount=type=secret,id=gh_user"),
+            "mounts gh_user secret"
+        );
+        assert!(
+            output.contains("--mount=type=secret,id=gh_pat"),
+            "mounts gh_pat secret"
+        );
+        assert!(
+            output.contains("github.com/cosmos/gaia"),
+            "contains stripped host in authenticated URL"
+        );
+        assert!(
+            output.contains("git clone https://github.com/cosmos/gaia /workspace"),
+            "fallback to public clone"
+        );
+    }
+
+    #[test]
+    fn clone_commands_unknown_method_uses_public() {
+        let mut df = DockerfileWriter::new();
+        generate_clone_commands(
+            &mut df,
+            "https://github.com/cosmos/gaia",
+            "some-other-method",
+        );
+        let output = df.build();
+        assert_eq!(
+            output,
+            "RUN git clone https://github.com/cosmos/gaia /workspace\n"
+        );
+    }
 }

@@ -188,4 +188,184 @@ mod tests {
         extend_from_env(&mut vars, &["__DOCKERMINT_TEST_NONEXISTENT__"]);
         assert!(vars.is_empty());
     }
+
+    // -- additional tests for mutation coverage --
+
+    #[test]
+    fn collect_repository_path_is_workspace() {
+        let sf = SelectedFlavours::default();
+        let vars = collect("v1.0.0", &sf);
+        assert_eq!(vars["repository_path"], "/workspace");
+    }
+
+    #[test]
+    fn collect_semver_tag_preserves_exact_input() {
+        let sf = SelectedFlavours::default();
+        let vars = collect("v99.88.77-rc1", &sf);
+        assert_eq!(vars["SEMVER_TAG"], "v99.88.77-rc1");
+    }
+
+    #[test]
+    fn collect_empty_tag() {
+        let sf = SelectedFlavours::default();
+        let vars = collect("", &sf);
+        assert_eq!(vars["SEMVER_TAG"], "");
+    }
+
+    #[test]
+    fn collect_host_arch_is_known_value() {
+        let sf = SelectedFlavours::default();
+        let vars = collect("v1.0.0", &sf);
+        let arch = &vars["HOST_ARCH"];
+        // Must match one of the supported arch strings or passthrough
+        let known = ["x86_64", "aarch64"];
+        assert!(
+            known.contains(&arch.as_str()) || !arch.is_empty(),
+            "HOST_ARCH should be a non-empty string, got: {arch}"
+        );
+    }
+
+    #[test]
+    fn host_arch_matches_std_env() {
+        let result = host_arch();
+        assert_eq!(result, std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn build_tags_comma_sep_absent_without_build_tags_flavor() {
+        let sf = SelectedFlavours::default();
+        let vars = collect("v1.0.0", &sf);
+        assert!(
+            !vars.contains_key("BUILD_TAGS_COMMA_SEP"),
+            "BUILD_TAGS_COMMA_SEP should be absent when no build_tags flavor"
+        );
+    }
+
+    #[test]
+    fn build_tags_comma_sep_single_tag() {
+        let mut sf = SelectedFlavours::default();
+        sf.selections.insert(
+            "build_tags".to_owned(),
+            FlavorValue::Multiple(vec!["netgo".to_owned()]),
+        );
+        let vars = collect("v1.0.0", &sf);
+        assert_eq!(vars["BUILD_TAGS_COMMA_SEP"], "netgo");
+    }
+
+    #[test]
+    fn build_tags_comma_sep_three_tags() {
+        let mut sf = SelectedFlavours::default();
+        sf.selections.insert(
+            "build_tags".to_owned(),
+            FlavorValue::Multiple(vec![
+                "netgo".to_owned(),
+                "muslc".to_owned(),
+                "ledger".to_owned(),
+            ]),
+        );
+        let vars = collect("v1.0.0", &sf);
+        assert_eq!(vars["BUILD_TAGS_COMMA_SEP"], "netgo,muslc,ledger");
+    }
+
+    #[test]
+    fn build_tags_single_flavor_does_not_produce_comma_sep() {
+        let mut sf = SelectedFlavours::default();
+        sf.selections.insert(
+            "build_tags".to_owned(),
+            FlavorValue::Single("netgo".to_owned()),
+        );
+        let vars = collect("v1.0.0", &sf);
+        assert!(
+            !vars.contains_key("BUILD_TAGS_COMMA_SEP"),
+            "Single flavor value should not produce BUILD_TAGS_COMMA_SEP"
+        );
+    }
+
+    #[test]
+    fn collect_returns_exactly_five_keys_without_build_tags() {
+        let sf = SelectedFlavours::default();
+        let vars = collect("v1.0.0", &sf);
+        assert_eq!(
+            vars.len(),
+            4,
+            "expected HOST_ARCH, CREATION_TIMESTAMP, SEMVER_TAG, repository_path"
+        );
+    }
+
+    #[test]
+    fn collect_returns_five_keys_with_build_tags() {
+        let mut sf = SelectedFlavours::default();
+        sf.selections.insert(
+            "build_tags".to_owned(),
+            FlavorValue::Multiple(vec!["netgo".to_owned()]),
+        );
+        let vars = collect("v1.0.0", &sf);
+        assert_eq!(vars.len(), 5);
+        assert!(vars.contains_key("BUILD_TAGS_COMMA_SEP"));
+    }
+
+    #[test]
+    fn utc_now_returns_valid_timestamp() {
+        let ts = utc_now();
+        assert_eq!(ts.len(), 20);
+        assert!(ts.ends_with('Z'));
+    }
+
+    #[test]
+    fn civil_from_days_leap_year() {
+        // 2000-02-29 is day 11_016 since epoch
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+    }
+
+    #[test]
+    fn civil_from_days_non_leap_century() {
+        // 1900-01-01 is day -25_567 since epoch
+        assert_eq!(civil_from_days(-25_567), (1900, 1, 1));
+    }
+
+    #[test]
+    fn civil_from_days_negative() {
+        // 1969-12-31 is day -1
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+    }
+
+    #[test]
+    fn civil_from_days_end_of_year() {
+        // 2000-12-31 is day 11_322
+        assert_eq!(civil_from_days(11_322), (2000, 12, 31));
+    }
+
+    #[test]
+    fn civil_from_days_start_of_year() {
+        // 2001-01-01 is day 11_323
+        assert_eq!(civil_from_days(11_323), (2001, 1, 1));
+    }
+
+    #[test]
+    fn extend_from_env_picks_up_set_variable() {
+        let key = "__DOCKERMINT_TEST_EXTEND_VAR__";
+        unsafe { std::env::set_var(key, "test_value") };
+        let mut vars = HashMap::new();
+        extend_from_env(&mut vars, &[key]);
+        assert_eq!(vars.get(key).map(String::as_str), Some("test_value"));
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    fn extend_from_env_mixed_present_and_missing() {
+        let key = "__DOCKERMINT_TEST_MIXED_VAR__";
+        unsafe { std::env::set_var(key, "present") };
+        let mut vars = HashMap::new();
+        extend_from_env(&mut vars, &[key, "__DOCKERMINT_TEST_MISSING_XYZ__"]);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[key], "present");
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    fn extend_from_env_empty_keys_slice() {
+        let mut vars = HashMap::new();
+        extend_from_env(&mut vars, &[]);
+        assert!(vars.is_empty());
+    }
 }

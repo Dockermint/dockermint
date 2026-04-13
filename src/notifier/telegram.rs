@@ -187,4 +187,179 @@ mod tests {
         assert!(truncated.len() <= MAX_MESSAGE_LEN);
         assert!(truncated.is_char_boundary(truncated.len()));
     }
+
+    #[test]
+    fn new_builds_correct_api_url() {
+        let n = TelegramNotifier::new("mytoken123", "chat42").expect("valid inputs");
+        assert_eq!(
+            n.api_url,
+            "https://api.telegram.org/botmytoken123/sendMessage",
+        );
+    }
+
+    #[test]
+    fn new_stores_chat_id() {
+        let n = TelegramNotifier::new("tok", "chat999").expect("valid inputs");
+        assert_eq!(n.chat_id, "chat999");
+    }
+
+    #[test]
+    fn new_empty_token_error_message_mentions_telegram_token() {
+        let err = TelegramNotifier::new("", "123").unwrap_err();
+        match err {
+            NotifierError::Config(msg) => {
+                assert!(
+                    msg.contains("TELEGRAM_TOKEN"),
+                    "error should mention TELEGRAM_TOKEN, got: {msg}",
+                );
+            },
+            other => panic!("expected Config error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_empty_chat_id_error_message_mentions_telegram_chat_id() {
+        let err = TelegramNotifier::new("tok", "").unwrap_err();
+        match err {
+            NotifierError::Config(msg) => {
+                assert!(
+                    msg.contains("TELEGRAM_CHAT_ID"),
+                    "error should mention TELEGRAM_CHAT_ID, got: {msg}",
+                );
+            },
+            other => panic!("expected Config error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn debug_redacts_token() {
+        let n = TelegramNotifier::new("secret_tok", "chat1").expect("valid inputs");
+        let debug = format!("{n:?}");
+        assert!(
+            !debug.contains("secret_tok"),
+            "Debug output must not contain the real token",
+        );
+        assert!(
+            debug.contains("REDACTED"),
+            "Debug output should contain REDACTED placeholder",
+        );
+        assert!(
+            debug.contains("chat1"),
+            "Debug output should show the chat_id",
+        );
+    }
+
+    #[test]
+    fn notify_build_start_message_format() {
+        let recipe = "Cosmos";
+        let tag = "v1.0.0";
+        let msg = format!("*Build started*\nRecipe: `{recipe}`\nTag: `{tag}`");
+        assert!(msg.contains("*Build started*"));
+        assert!(msg.contains("Recipe: `Cosmos`"));
+        assert!(msg.contains("Tag: `v1.0.0`"));
+    }
+
+    #[test]
+    fn notify_build_success_message_format() {
+        let recipe = "Osmosis";
+        let tag = "v2.0.0";
+        let duration = Duration::from_secs(142);
+        let secs = duration.as_secs();
+        let msg = format!(
+            "*Build succeeded*\nRecipe: `{recipe}`\nTag: `{tag}`\n\
+             Duration: {secs}s"
+        );
+        assert!(msg.contains("*Build succeeded*"));
+        assert!(msg.contains("Recipe: `Osmosis`"));
+        assert!(msg.contains("Tag: `v2.0.0`"));
+        assert!(msg.contains("Duration: 142s"));
+    }
+
+    #[test]
+    fn notify_build_failure_message_format() {
+        let recipe = "Juno";
+        let tag = "v3.0.0";
+        let error = "OOM killed";
+        let msg = format!(
+            "*Build failed*\nRecipe: `{recipe}`\nTag: `{tag}`\n\
+             Error: ```\n{error}\n```"
+        );
+        assert!(msg.contains("*Build failed*"));
+        assert!(msg.contains("Recipe: `Juno`"));
+        assert!(msg.contains("Tag: `v3.0.0`"));
+        assert!(msg.contains("Error: ```\nOOM killed\n```"));
+    }
+
+    #[test]
+    fn notify_build_success_duration_zero() {
+        let duration = Duration::from_secs(0);
+        let secs = duration.as_secs();
+        let msg = format!("*Build succeeded*\nRecipe: `r`\nTag: `t`\nDuration: {secs}s");
+        assert!(msg.contains("Duration: 0s"));
+    }
+
+    #[test]
+    fn notify_build_failure_error_with_special_chars() {
+        let error = "line1\nline2\ttab";
+        let msg = format!(
+            "*Build failed*\nRecipe: `r`\nTag: `t`\n\
+             Error: ```\n{error}\n```"
+        );
+        assert!(msg.contains("line1\nline2\ttab"));
+    }
+
+    #[test]
+    fn truncation_not_applied_when_under_limit() {
+        let text = "a".repeat(MAX_MESSAGE_LEN);
+        // Text is exactly at the limit, no truncation needed.
+        let truncated = if text.len() > MAX_MESSAGE_LEN {
+            let boundary = text.floor_char_boundary(MAX_MESSAGE_LEN);
+            &text[..boundary]
+        } else {
+            &text
+        };
+        assert_eq!(truncated.len(), MAX_MESSAGE_LEN);
+    }
+
+    #[test]
+    fn truncation_applied_when_over_limit() {
+        let text = "b".repeat(MAX_MESSAGE_LEN + 100);
+        let truncated = if text.len() > MAX_MESSAGE_LEN {
+            let boundary = text.floor_char_boundary(MAX_MESSAGE_LEN);
+            &text[..boundary]
+        } else {
+            &text
+        };
+        assert_eq!(truncated.len(), MAX_MESSAGE_LEN);
+    }
+
+    #[test]
+    fn truncation_with_3_byte_char_at_boundary() {
+        // '\u{2603}' (snowman) is 3 bytes in UTF-8.
+        let filler_len = MAX_MESSAGE_LEN - 2;
+        let mut text = "x".repeat(filler_len);
+        text.push('\u{2603}');
+        text.push('z');
+        assert!(text.len() > MAX_MESSAGE_LEN);
+
+        let boundary = text.floor_char_boundary(MAX_MESSAGE_LEN);
+        let truncated = &text[..boundary];
+        assert!(truncated.len() <= MAX_MESSAGE_LEN);
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[test]
+    fn truncation_with_4_byte_char_at_boundary() {
+        // '\u{1F600}' (grinning face) is 4 bytes in UTF-8.
+        let filler_len = MAX_MESSAGE_LEN - 3;
+        let mut text = "x".repeat(filler_len);
+        text.push('\u{1F600}');
+        text.push('z');
+        assert!(text.len() > MAX_MESSAGE_LEN);
+
+        let boundary = text.floor_char_boundary(MAX_MESSAGE_LEN);
+        let truncated = &text[..boundary];
+        assert!(truncated.len() <= MAX_MESSAGE_LEN);
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
 }

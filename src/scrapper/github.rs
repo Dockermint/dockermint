@@ -275,4 +275,137 @@ mod tests {
         let err = GithubClient::new(Some("user"), None).unwrap_err();
         assert!(matches!(err, VcsError::Auth(_)));
     }
+
+    // -- additional tests for mutation coverage --
+
+    #[test]
+    fn new_full_auth_stores_credentials() {
+        let client = GithubClient::new(Some("myuser"), Some("mytoken")).expect("ok");
+        let (user, pat) = client.auth.as_ref().expect("auth should be Some");
+        assert_eq!(user, "myuser");
+        assert_eq!(pat.expose_secret(), "mytoken");
+    }
+
+    #[test]
+    fn new_pat_only_fails() {
+        let err = GithubClient::new(None, Some("token")).unwrap_err();
+        assert!(matches!(err, VcsError::Auth(_)));
+    }
+
+    #[test]
+    fn new_partial_auth_error_message_content() {
+        let err = GithubClient::new(Some("user"), None).unwrap_err();
+        match err {
+            VcsError::Auth(msg) => {
+                assert!(
+                    msg.contains("GH_USER") && msg.contains("GH_PAT"),
+                    "error should mention GH_USER and GH_PAT, got: {msg}"
+                );
+            },
+            other => panic!("expected VcsError::Auth, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_owner_repo_trailing_dot_git_and_slash() {
+        let result =
+            GithubClient::parse_owner_repo("https://github.com/cosmos/gaia.git/").expect("parse");
+        assert_eq!(result, "cosmos/gaia");
+    }
+
+    #[test]
+    fn parse_owner_repo_bare_path_fails() {
+        let err = GithubClient::parse_owner_repo("cosmos").expect_err("should fail");
+        assert!(matches!(err, VcsError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_owner_repo_empty_string_fails() {
+        let err = GithubClient::parse_owner_repo("").expect_err("should fail");
+        assert!(matches!(err, VcsError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_owner_repo_ssh_style() {
+        // rsplitn(3, '/') handles any prefix with at least two slashes
+        let result = GithubClient::parse_owner_repo("git@github.com/cosmos/gaia").expect("parse");
+        assert_eq!(result, "cosmos/gaia");
+    }
+
+    #[test]
+    fn build_glob_set_trailing_comma() {
+        let set = build_glob_set("v*,").expect("ok").expect("some");
+        assert!(set.is_match("v1.0"));
+    }
+
+    #[test]
+    fn build_glob_set_leading_comma() {
+        let set = build_glob_set(",v*").expect("ok").expect("some");
+        assert!(set.is_match("v1.0"));
+    }
+
+    #[test]
+    fn build_glob_set_only_commas_produces_empty_set() {
+        // All entries are empty after trim, so no globs are added.
+        // The builder still produces a GlobSet (Some), but it matches
+        // nothing.
+        let set = build_glob_set(",,, ,").expect("ok").expect("some");
+        assert!(
+            !set.is_match("anything"),
+            "an empty glob set should not match any input"
+        );
+    }
+
+    #[test]
+    fn build_glob_set_exact_match() {
+        let set = build_glob_set("v1.0.0").expect("ok").expect("some");
+        assert!(set.is_match("v1.0.0"));
+        assert!(!set.is_match("v1.0.1"));
+    }
+
+    #[test]
+    fn build_glob_set_question_mark_wildcard() {
+        let set = build_glob_set("v1.?.0").expect("ok").expect("some");
+        assert!(set.is_match("v1.0.0"));
+        assert!(set.is_match("v1.9.0"));
+        assert!(!set.is_match("v1.10.0"));
+    }
+
+    #[test]
+    fn github_release_deserializes_minimal() {
+        let json = r#"{"tag_name": "v1.0.0"}"#;
+        let release: GithubRelease = serde_json::from_str(json).expect("parse");
+        assert_eq!(release.tag_name, "v1.0.0");
+        assert!(!release.prerelease);
+        assert!(release.published_at.is_none());
+    }
+
+    #[test]
+    fn github_release_deserializes_full() {
+        let json = r#"{
+            "tag_name": "v2.0.0",
+            "prerelease": true,
+            "published_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let release: GithubRelease = serde_json::from_str(json).expect("parse");
+        assert_eq!(release.tag_name, "v2.0.0");
+        assert!(release.prerelease);
+        assert_eq!(
+            release.published_at.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn github_release_prerelease_defaults_false() {
+        let json = r#"{"tag_name": "v3.0.0", "published_at": null}"#;
+        let release: GithubRelease = serde_json::from_str(json).expect("parse");
+        assert!(!release.prerelease);
+    }
+
+    #[test]
+    fn build_glob_set_invalid_pattern_returns_error() {
+        let result = build_glob_set("[invalid");
+        assert!(result.is_err());
+    }
 }

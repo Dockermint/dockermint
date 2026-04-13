@@ -523,4 +523,281 @@ mod tests {
         drop(guard);
         let _ = std::fs::remove_dir_all(&build_dir);
     }
+
+    #[test]
+    fn new_stores_docker_host() {
+        let b = BuildKitBuilder::new("tcp://remote:2376".to_owned(), "dm".to_owned(), false);
+        assert_eq!(b.docker_host, "tcp://remote:2376");
+    }
+
+    #[test]
+    fn new_stores_prefix() {
+        let b = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "myprefix".to_owned(),
+            true,
+        );
+        assert_eq!(b.prefix, "myprefix");
+    }
+
+    #[test]
+    fn new_stores_persist_false() {
+        let b = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "dm".to_owned(),
+            false,
+        );
+        assert!(!b.persist);
+    }
+
+    #[test]
+    fn new_stores_persist_true() {
+        let b = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "dm".to_owned(),
+            true,
+        );
+        assert!(b.persist);
+    }
+
+    #[test]
+    fn builder_name_with_empty_suffix() {
+        let b = BuildKitBuilder::new("unix:///sock".to_owned(), "pre".to_owned(), false);
+        assert_eq!(b.builder_name(""), "pre-");
+    }
+
+    #[test]
+    fn builder_name_with_custom_suffix() {
+        let b = BuildKitBuilder::new("unix:///sock".to_owned(), "dockermint".to_owned(), false);
+        assert_eq!(b.builder_name("riscv64"), "dockermint-riscv64");
+    }
+
+    #[test]
+    fn docker_env_returns_single_entry() {
+        let b = BuildKitBuilder::new("unix:///custom.sock".to_owned(), "dm".to_owned(), false);
+        let env = b.docker_env();
+        assert_eq!(env.len(), 1);
+    }
+
+    #[test]
+    fn docker_env_key_is_docker_host() {
+        let b = BuildKitBuilder::new("tcp://host:1234".to_owned(), "dm".to_owned(), false);
+        let env = b.docker_env();
+        assert_eq!(env[0].0, "DOCKER_HOST");
+    }
+
+    #[test]
+    fn docker_env_value_matches_docker_host() {
+        let b = BuildKitBuilder::new("tcp://host:1234".to_owned(), "dm".to_owned(), false);
+        let env = b.docker_env();
+        assert_eq!(env[0].1, "tcp://host:1234");
+    }
+
+    #[test]
+    fn unique_build_dir_name_starts_with_prefix() {
+        let name = unique_build_dir_name();
+        assert!(
+            name.starts_with("dockermint-build-"),
+            "expected prefix 'dockermint-build-', got: {name}",
+        );
+    }
+
+    #[test]
+    fn unique_build_dir_name_contains_pid() {
+        let pid = std::process::id().to_string();
+        let name = unique_build_dir_name();
+        assert!(
+            name.contains(&pid),
+            "expected dir name to contain PID {pid}, got: {name}",
+        );
+    }
+
+    #[test]
+    fn unique_build_dir_name_counter_increments() {
+        let a = unique_build_dir_name();
+        let b = unique_build_dir_name();
+        let c = unique_build_dir_name();
+
+        // Extract the counter (last component after final '-')
+        let extract_counter = |s: &str| -> u64 {
+            s.rsplit('-')
+                .next()
+                .expect("has suffix")
+                .parse::<u64>()
+                .expect("counter is numeric")
+        };
+
+        let ca = extract_counter(&a);
+        let cb = extract_counter(&b);
+        let cc = extract_counter(&c);
+
+        assert!(cb > ca, "counter should increment: {ca} < {cb}");
+        assert!(cc > cb, "counter should increment: {cb} < {cc}");
+    }
+
+    #[test]
+    fn write_dockerfile_file_named_dockerfile() {
+        let builder = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "test".to_owned(),
+            false,
+        );
+
+        let path = builder
+            .write_dockerfile("FROM scratch")
+            .expect("write_dockerfile should succeed");
+
+        assert_eq!(
+            path.file_name().and_then(|f| f.to_str()),
+            Some("Dockerfile"),
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("has parent"));
+    }
+
+    #[test]
+    fn write_dockerfile_content_matches() {
+        let builder = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "test".to_owned(),
+            false,
+        );
+
+        let content = "FROM alpine:3.20\nRUN apk add --no-cache git";
+        let path = builder
+            .write_dockerfile(content)
+            .expect("write_dockerfile should succeed");
+
+        let read_back = std::fs::read_to_string(&path).expect("read file");
+        assert_eq!(read_back, content);
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("has parent"));
+    }
+
+    #[test]
+    fn write_dockerfile_parent_dir_exists() {
+        let builder = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "test".to_owned(),
+            false,
+        );
+
+        let path = builder
+            .write_dockerfile("FROM scratch")
+            .expect("write_dockerfile should succeed");
+
+        let parent = path.parent().expect("has parent");
+        assert!(parent.is_dir(), "parent directory should exist",);
+
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn platform_suffixes_contains_amd64_and_arm64() {
+        let platforms: Vec<&str> = PLATFORM_SUFFIXES.iter().map(|(p, _)| *p).collect();
+        assert!(
+            platforms.contains(&"linux/amd64"),
+            "PLATFORM_SUFFIXES should contain linux/amd64",
+        );
+        assert!(
+            platforms.contains(&"linux/arm64"),
+            "PLATFORM_SUFFIXES should contain linux/arm64",
+        );
+    }
+
+    #[test]
+    fn platform_suffixes_maps_correctly() {
+        for (platform, suffix) in PLATFORM_SUFFIXES {
+            match *platform {
+                "linux/amd64" => {
+                    assert_eq!(*suffix, "amd64");
+                },
+                "linux/arm64" => {
+                    assert_eq!(*suffix, "arm64");
+                },
+                other => panic!("unexpected platform: {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn write_secret_file_creates_file_with_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "dockermint-test-secret-{}",
+            unique_build_dir_name()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let path = dir.join("test_secret");
+        write_secret_file(&path, "my-secret-value").expect("write_secret_file should succeed");
+
+        let content = std::fs::read_to_string(&path).expect("read secret");
+        assert_eq!(content, "my-secret-value");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_file_restricts_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("dockermint-test-perms-{}", unique_build_dir_name()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let path = dir.join("perm_secret");
+        write_secret_file(&path, "secret").expect("write_secret_file should succeed");
+
+        let meta = std::fs::metadata(&path).expect("metadata");
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "secret file should have mode 0o600, got: {mode:o}",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dir_guard_removes_nested_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "dockermint-guard-nested-{}",
+            unique_build_dir_name()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let sub = dir.join("subdir");
+        std::fs::create_dir_all(&sub).expect("create subdir");
+        std::fs::write(sub.join("file.txt"), "data").expect("write");
+
+        assert!(dir.exists());
+
+        {
+            let _guard = DirGuard::new(dir.clone());
+        }
+
+        assert!(
+            !dir.exists(),
+            "DirGuard should remove entire directory tree",
+        );
+    }
+
+    #[test]
+    fn debug_impl_shows_buildkit_builder() {
+        let b = BuildKitBuilder::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            "dm".to_owned(),
+            true,
+        );
+        let debug = format!("{b:?}");
+        assert!(
+            debug.contains("BuildKitBuilder"),
+            "Debug output should contain type name",
+        );
+        assert!(
+            debug.contains("persist: true"),
+            "Debug output should show persist field, got: {debug}",
+        );
+    }
 }

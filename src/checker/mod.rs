@@ -347,4 +347,125 @@ mod tests {
         let env = docker_env("tcp://10.0.0.1:2376");
         assert_eq!(env["DOCKER_HOST"], "tcp://10.0.0.1:2376");
     }
+
+    // -- additional tests for mutation coverage --
+
+    #[test]
+    fn stale_lock_with_empty_file_is_reclaimed() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("empty.lock");
+        std::fs::write(&path, "").expect("should write empty lock");
+
+        let _guard = ensure_singleton_at(&path).expect("should reclaim empty lock");
+        let contents = std::fs::read_to_string(&path).expect("should read lock file");
+        assert_eq!(contents.trim(), std::process::id().to_string());
+    }
+
+    #[test]
+    fn stale_lock_with_whitespace_only_is_reclaimed() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("whitespace.lock");
+        std::fs::write(&path, "   \n  ").expect("should write whitespace");
+
+        let _guard = ensure_singleton_at(&path).expect("should reclaim whitespace lock");
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn is_lock_held_by_live_process_returns_false_for_nonexistent_file() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("nonexistent.lock");
+        assert!(!is_lock_held_by_live_process(&path));
+    }
+
+    #[test]
+    fn is_lock_held_by_live_process_returns_false_for_corrupt_content() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("corrupt_live.lock");
+        std::fs::write(&path, "abc-not-a-pid").expect("write");
+        assert!(!is_lock_held_by_live_process(&path));
+    }
+
+    #[test]
+    fn is_lock_held_by_live_process_returns_false_for_dead_pid() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("dead_pid.lock");
+        std::fs::write(&path, "4000000").expect("write");
+        assert!(!is_lock_held_by_live_process(&path));
+    }
+
+    #[test]
+    fn is_lock_held_by_live_process_returns_true_for_current_pid() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("self_pid.lock");
+        std::fs::write(&path, std::process::id().to_string()).expect("write");
+        assert!(is_lock_held_by_live_process(&path));
+    }
+
+    #[test]
+    fn try_create_lock_fails_when_file_exists() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("exists.lock");
+        std::fs::write(&path, "12345").expect("create file");
+
+        let err = try_create_lock(&path).expect_err("should fail");
+        assert!(
+            matches!(err, CheckerError::AlreadyRunning { .. }),
+            "expected AlreadyRunning, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn try_create_lock_succeeds_on_fresh_path() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("fresh.lock");
+
+        let guard = try_create_lock(&path).expect("should succeed");
+        assert!(path.exists());
+        assert_eq!(guard.pid, std::process::id());
+        drop(guard);
+    }
+
+    #[test]
+    fn docker_env_has_exactly_one_entry() {
+        let env = docker_env("unix:///var/run/docker.sock");
+        assert_eq!(env.len(), 1);
+        assert!(env.contains_key("DOCKER_HOST"));
+    }
+
+    #[test]
+    fn lock_guard_pid_matches_process_id() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("pid_field.lock");
+        let guard = ensure_singleton_at(&path).expect("should acquire lock");
+        assert_eq!(guard.pid, std::process::id());
+        drop(guard);
+    }
+
+    #[test]
+    fn double_acquire_error_contains_lock_path() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let path = dir.path().join("path_check.lock");
+        let _guard = ensure_singleton_at(&path).expect("acquire");
+
+        let err = ensure_singleton_at(&path).expect_err("second");
+        match err {
+            CheckerError::AlreadyRunning { lock_path } => {
+                assert_eq!(lock_path, path);
+            },
+            other => panic!("expected AlreadyRunning, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn system_requirements_debug() {
+        let req = SystemRequirements {
+            docker: true,
+            buildx: true,
+            git: false,
+        };
+        let dbg = format!("{req:?}");
+        assert!(dbg.contains("docker: true"));
+        assert!(dbg.contains("git: false"));
+    }
 }

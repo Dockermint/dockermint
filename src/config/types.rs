@@ -354,4 +354,267 @@ mod tests {
         assert!(ov.0.contains_key("db_backend"));
         assert!(ov.0.contains_key("build_tags"));
     }
+
+    // -- default value tests --
+
+    #[test]
+    fn empty_toml_yields_all_defaults() {
+        let cfg: Config = toml::from_str("").expect("parse empty toml");
+        assert_eq!(cfg.version, 1);
+        assert_eq!(cfg.recipes_dir, PathBuf::from("recipes"));
+        assert_eq!(cfg.log.level, "info");
+        assert_eq!(cfg.log.file_prefix, "dockermint");
+        assert!(!cfg.log.json);
+        assert!(cfg.log.directory.is_none());
+        assert!(cfg.daemon.is_none());
+        assert!(cfg.rpc.is_none());
+        assert!(cfg.flavours.is_empty());
+        assert_eq!(cfg.docker.socket_uri, "unix:///var/run/docker.sock");
+        assert_eq!(cfg.docker.builder_prefix, "dockermint");
+        assert_eq!(cfg.database.path, PathBuf::from("data/dockermint.redb"));
+        assert!(!cfg.notifier.enabled);
+        assert_eq!(cfg.vcs.max_concurrent_requests, 4);
+        assert!(cfg.registry.url.is_none());
+        assert!(!cfg.metrics.enabled);
+        assert_eq!(cfg.metrics.bind, SocketAddr::from(([127, 0, 0, 1], 9200)));
+    }
+
+    #[test]
+    fn log_config_default_trait() {
+        let log = LogConfig::default();
+        assert_eq!(log.level, "info");
+        assert!(log.directory.is_none());
+        assert_eq!(log.file_prefix, "dockermint");
+        assert!(!log.json);
+    }
+
+    #[test]
+    fn log_config_overrides() {
+        let raw = r#"
+            level = "trace"
+            directory = "/var/log/dockermint"
+            file_prefix = "dm"
+            json = true
+        "#;
+        let log: LogConfig = toml::from_str(raw).expect("parse");
+        assert_eq!(log.level, "trace");
+        assert_eq!(log.directory, Some(PathBuf::from("/var/log/dockermint")));
+        assert_eq!(log.file_prefix, "dm");
+        assert!(log.json);
+    }
+
+    #[test]
+    fn daemon_config_defaults() {
+        let raw = r#"
+            [daemon]
+        "#;
+        // Embedded inside Config so daemon appears as section
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        let daemon = cfg.daemon.expect("daemon should be Some");
+        assert_eq!(daemon.poll_interval_secs, 60);
+        assert_eq!(daemon.max_builds_per_cycle, 1);
+    }
+
+    #[test]
+    fn daemon_config_custom_values() {
+        let raw = r#"
+            [daemon]
+            poll_interval_secs = 120
+            max_builds_per_cycle = 10
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        let daemon = cfg.daemon.expect("daemon should be Some");
+        assert_eq!(daemon.poll_interval_secs, 120);
+        assert_eq!(daemon.max_builds_per_cycle, 10);
+    }
+
+    #[test]
+    fn rpc_config_default_bind() {
+        let raw = r#"
+            [rpc]
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        let rpc = cfg.rpc.expect("rpc should be Some");
+        assert_eq!(rpc.bind, SocketAddr::from(([127, 0, 0, 1], 9100)));
+    }
+
+    #[test]
+    fn rpc_config_custom_bind() {
+        let raw = r#"
+            [rpc]
+            bind = "0.0.0.0:8080"
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        let rpc = cfg.rpc.expect("rpc should be Some");
+        assert_eq!(
+            rpc.bind,
+            "0.0.0.0:8080".parse::<SocketAddr>().expect("addr")
+        );
+    }
+
+    #[test]
+    fn docker_config_default_trait() {
+        let docker = DockerConfig::default();
+        assert_eq!(docker.socket_uri, "unix:///var/run/docker.sock");
+        assert_eq!(docker.builder_prefix, "dockermint");
+    }
+
+    #[test]
+    fn docker_config_custom_values() {
+        let raw = r#"
+            [docker]
+            socket_uri = "tcp://10.0.0.1:2376"
+            builder_prefix = "mybuilder"
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert_eq!(cfg.docker.socket_uri, "tcp://10.0.0.1:2376");
+        assert_eq!(cfg.docker.builder_prefix, "mybuilder");
+    }
+
+    #[test]
+    fn database_config_default_trait() {
+        let db = DatabaseConfig::default();
+        assert_eq!(db.path, PathBuf::from("data/dockermint.redb"));
+    }
+
+    #[test]
+    fn database_config_custom_path() {
+        let raw = r#"
+            [database]
+            path = "/opt/dockermint/state.redb"
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert_eq!(
+            cfg.database.path,
+            PathBuf::from("/opt/dockermint/state.redb")
+        );
+    }
+
+    #[test]
+    fn notifier_config_defaults_to_disabled() {
+        let n = NotifierConfig::default();
+        assert!(!n.enabled);
+    }
+
+    #[test]
+    fn notifier_config_enabled() {
+        let raw = r#"
+            [notifier]
+            enabled = true
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert!(cfg.notifier.enabled);
+    }
+
+    #[test]
+    fn vcs_config_default_trait() {
+        let vcs = VcsConfig::default();
+        assert_eq!(vcs.max_concurrent_requests, 4);
+    }
+
+    #[test]
+    fn registry_config_default_url_is_none() {
+        let reg = RegistryConfig::default();
+        assert!(reg.url.is_none());
+    }
+
+    #[test]
+    fn registry_config_custom_url() {
+        let raw = r#"
+            [registry]
+            url = "ghcr.io"
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert_eq!(cfg.registry.url.as_deref(), Some("ghcr.io"));
+    }
+
+    #[test]
+    fn metrics_config_default_trait() {
+        let m = MetricsConfig::default();
+        assert!(!m.enabled);
+        assert_eq!(m.bind, SocketAddr::from(([127, 0, 0, 1], 9200)));
+    }
+
+    #[test]
+    fn metrics_config_custom() {
+        let raw = r#"
+            [metrics]
+            enabled = true
+            bind = "0.0.0.0:9300"
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert!(cfg.metrics.enabled);
+        assert_eq!(
+            cfg.metrics.bind,
+            "0.0.0.0:9300".parse::<SocketAddr>().expect("addr")
+        );
+    }
+
+    #[test]
+    fn mode_enum_equality() {
+        assert_eq!(Mode::Cli, Mode::Cli);
+        assert_eq!(Mode::Daemon, Mode::Daemon);
+        assert_ne!(Mode::Cli, Mode::Daemon);
+    }
+
+    #[test]
+    fn mode_enum_clone_and_copy() {
+        let m = Mode::Cli;
+        let m2 = m;
+        assert_eq!(m, m2);
+    }
+
+    #[test]
+    fn version_override() {
+        let raw = r#"version = 42"#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert_eq!(cfg.version, 42);
+    }
+
+    #[test]
+    fn recipes_dir_override() {
+        let raw = r#"recipes_dir = "/custom/recipes""#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert_eq!(cfg.recipes_dir, PathBuf::from("/custom/recipes"));
+    }
+
+    #[test]
+    fn multiple_flavour_overrides() {
+        let raw = r#"
+            [flavours.cosmos-gaiad]
+            db_backend = "pebbledb"
+            build_tags = ["netgo", "muslc"]
+
+            [flavours.kyve-chain]
+            network = "mainnet"
+        "#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert_eq!(cfg.flavours.len(), 2);
+        assert!(cfg.flavours.contains_key("cosmos-gaiad"));
+        assert!(cfg.flavours.contains_key("kyve-chain"));
+
+        let gaiad = &cfg.flavours["cosmos-gaiad"];
+        assert!(gaiad.0.contains_key("db_backend"));
+        assert!(gaiad.0.contains_key("build_tags"));
+
+        let kyve = &cfg.flavours["kyve-chain"];
+        assert_eq!(
+            kyve.0.get("network"),
+            Some(&FlavorValue::Single("mainnet".to_owned()))
+        );
+    }
+
+    #[test]
+    fn flavour_override_empty_map() {
+        let ov = RecipeFlavourOverride::default();
+        assert!(ov.0.is_empty());
+    }
+
+    #[test]
+    fn config_absent_optional_sections_are_none() {
+        let raw = r#"version = 1"#;
+        let cfg: Config = toml::from_str(raw).expect("parse");
+        assert!(cfg.daemon.is_none());
+        assert!(cfg.rpc.is_none());
+    }
 }

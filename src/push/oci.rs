@@ -272,4 +272,112 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn docker_env_contains_docker_host_key() {
+        let r = OciRegistry::new("tcp://10.0.0.1:2376".to_owned(), Some("ghcr.io".to_owned()));
+        let env = r.docker_env();
+        assert_eq!(env.len(), 1);
+        assert_eq!(
+            env.get("DOCKER_HOST").map(String::as_str),
+            Some("tcp://10.0.0.1:2376"),
+        );
+    }
+
+    #[test]
+    fn docker_env_uses_exact_host_value() {
+        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
+        let env = r.docker_env();
+        assert_eq!(
+            env.get("DOCKER_HOST").map(String::as_str),
+            Some("unix:///var/run/docker.sock"),
+        );
+    }
+
+    #[test]
+    fn new_stores_docker_host() {
+        let r = OciRegistry::new(
+            "tcp://remote:2376".to_owned(),
+            Some("registry.example.com".to_owned()),
+        );
+        assert_eq!(r.docker_host, "tcp://remote:2376");
+    }
+
+    #[test]
+    fn new_stores_registry_url() {
+        let r = OciRegistry::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            Some("registry.example.com".to_owned()),
+        );
+        assert_eq!(r.registry_url.as_deref(), Some("registry.example.com"),);
+    }
+
+    #[tokio::test]
+    async fn authenticate_error_only_user_contains_both() {
+        let _guard_user = EnvGuard::set("REGISTRY_USER", "alice");
+        let _guard_pass = EnvGuard::remove("REGISTRY_PASSWORD");
+
+        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
+        let err = r.authenticate().await.unwrap_err();
+        match err {
+            RegistryError::Auth(msg) => {
+                assert!(
+                    msg.contains("both"),
+                    "error message should mention 'both', got: {msg}",
+                );
+                assert!(
+                    msg.contains("REGISTRY_USER"),
+                    "error message should mention REGISTRY_USER, got: {msg}",
+                );
+                assert!(
+                    msg.contains("REGISTRY_PASSWORD"),
+                    "error message should mention REGISTRY_PASSWORD, got: {msg}",
+                );
+            },
+            other => panic!("expected Auth error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticate_error_only_password_contains_both() {
+        let _guard_user = EnvGuard::remove("REGISTRY_USER");
+        let _guard_pass = EnvGuard::set("REGISTRY_PASSWORD", "secret");
+
+        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
+        let err = r.authenticate().await.unwrap_err();
+        match err {
+            RegistryError::Auth(msg) => {
+                assert!(
+                    msg.contains("both"),
+                    "error message should mention 'both', got: {msg}",
+                );
+                assert!(
+                    msg.contains("REGISTRY_USER"),
+                    "error message should mention REGISTRY_USER, got: {msg}",
+                );
+                assert!(
+                    msg.contains("REGISTRY_PASSWORD"),
+                    "error message should mention REGISTRY_PASSWORD, got: {msg}",
+                );
+            },
+            other => panic!("expected Auth error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn debug_impl_shows_fields() {
+        let r = OciRegistry::new(
+            "unix:///var/run/docker.sock".to_owned(),
+            Some("ghcr.io".to_owned()),
+        );
+        let debug = format!("{r:?}");
+        assert!(
+            debug.contains("OciRegistry"),
+            "Debug output should contain type name",
+        );
+        assert!(
+            debug.contains("docker_host"),
+            "Debug output should contain field name 'docker_host'",
+        );
+    }
 }
