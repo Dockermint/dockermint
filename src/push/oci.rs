@@ -38,6 +38,34 @@ impl OciRegistry {
     }
 }
 
+/// Validate that registry credentials are either both present or both absent.
+///
+/// # Arguments
+///
+/// * `user` - Result from reading `REGISTRY_USER` environment variable
+/// * `password` - Result from reading `REGISTRY_PASSWORD` environment variable
+///
+/// # Returns
+///
+/// * `Ok(Some((user, password)))` when both credentials are present
+/// * `Ok(None)` when both credentials are absent
+///
+/// # Errors
+///
+/// Returns [`RegistryError::Auth`] if only one of the two credentials is provided.
+fn validate_credentials(
+    user: Result<String, std::env::VarError>,
+    password: Result<String, std::env::VarError>,
+) -> Result<Option<(String, String)>, RegistryError> {
+    match (user, password) {
+        (Ok(u), Ok(p)) => Ok(Some((u, p))),
+        (Err(_), Err(_)) => Ok(None),
+        _ => Err(RegistryError::Auth(
+            "both REGISTRY_USER and REGISTRY_PASSWORD must be set".to_owned(),
+        )),
+    }
+}
+
 impl RegistryClient for OciRegistry {
     /// Authenticate with the registry using `docker login`.
     ///
@@ -45,24 +73,16 @@ impl RegistryClient for OciRegistry {
     /// environment.  If both are absent, authentication is skipped
     /// (public push or pre-authenticated daemon).
     async fn authenticate(&self) -> Result<(), RegistryError> {
-        let user = std::env::var("REGISTRY_USER");
-        let password = std::env::var("REGISTRY_PASSWORD");
+        let creds = validate_credentials(
+            std::env::var("REGISTRY_USER"),
+            std::env::var("REGISTRY_PASSWORD"),
+        )?;
 
-        let (user, password) = match (user, password) {
-            (Ok(u), Ok(p)) => (u, p),
-            (Err(_), Err(_)) => {
+        let (user, password) = match creds {
+            Some(c) => c,
+            None => {
                 tracing::debug!("no registry credentials, skipping login");
                 return Ok(());
-            },
-            (Ok(_), Err(_)) => {
-                return Err(RegistryError::Auth(
-                    "both REGISTRY_USER and REGISTRY_PASSWORD must be set".to_owned(),
-                ));
-            },
-            (Err(_), Ok(_)) => {
-                return Err(RegistryError::Auth(
-                    "both REGISTRY_USER and REGISTRY_PASSWORD must be set".to_owned(),
-                ));
             },
         };
 
@@ -211,65 +231,67 @@ mod tests {
         assert!(r.registry_url.is_none());
     }
 
-    #[tokio::test]
-    async fn authenticate_errors_when_only_user_set() {
-        let _guard_user = EnvGuard::set("REGISTRY_USER", "alice");
-        let _guard_pass = EnvGuard::remove("REGISTRY_PASSWORD");
+    #[test]
+    fn validate_credentials_both_set() {
+        let result = validate_credentials(Ok("alice".to_owned()), Ok("secret".to_owned()));
+        let creds = result.expect("should return Ok").expect("should be Some");
+        assert_eq!(creds.0, "alice");
+        assert_eq!(creds.1, "secret");
+    }
 
-        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
-        let err = r.authenticate().await.unwrap_err();
-        assert!(
-            matches!(err, RegistryError::Auth(ref msg) if msg.contains("both")),
-            "expected Auth error about both vars, got: {err:?}"
+    #[test]
+    fn validate_credentials_neither_set() {
+        let result = validate_credentials(
+            Err(std::env::VarError::NotPresent),
+            Err(std::env::VarError::NotPresent),
         );
+        assert!(result.expect("should be Ok").is_none());
     }
 
-    #[tokio::test]
-    async fn authenticate_errors_when_only_password_set() {
-        let _guard_user = EnvGuard::remove("REGISTRY_USER");
-        let _guard_pass = EnvGuard::set("REGISTRY_PASSWORD", "secret");
-
-        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
-        let err = r.authenticate().await.unwrap_err();
-        assert!(
-            matches!(err, RegistryError::Auth(ref msg) if msg.contains("both")),
-            "expected Auth error about both vars, got: {err:?}"
-        );
-    }
-
-    /// RAII guard that sets an env var and restores the original value
-    /// on drop.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, val: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: Tests using EnvGuard run serially (single-threaded
-            // test runner) so no concurrent env access occurs.
-            unsafe { std::env::set_var(key, val) };
-            Self { key, prev }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: Tests using EnvGuard run serially (single-threaded
-            // test runner) so no concurrent env access occurs.
-            unsafe { std::env::remove_var(key) };
-            Self { key, prev }
+    #[test]
+    fn validate_credentials_only_user_errors() {
+        let err = validate_credentials(Ok("alice".to_owned()), Err(std::env::VarError::NotPresent))
+            .unwrap_err();
+        match err {
+            RegistryError::Auth(msg) => {
+                assert!(
+                    msg.contains("both"),
+                    "error message should mention 'both', got: {msg}",
+                );
+                assert!(
+                    msg.contains("REGISTRY_USER"),
+                    "error message should mention REGISTRY_USER, got: {msg}",
+                );
+                assert!(
+                    msg.contains("REGISTRY_PASSWORD"),
+                    "error message should mention REGISTRY_PASSWORD, got: {msg}",
+                );
+            },
+            other => panic!("expected Auth error, got: {other:?}"),
         }
     }
 
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: Tests using EnvGuard run serially (single-threaded
-            // test runner) so no concurrent env access occurs.
-            match &self.prev {
-                Some(v) => unsafe { std::env::set_var(self.key, v) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
+    #[test]
+    fn validate_credentials_only_password_errors() {
+        let err =
+            validate_credentials(Err(std::env::VarError::NotPresent), Ok("secret".to_owned()))
+                .unwrap_err();
+        match err {
+            RegistryError::Auth(msg) => {
+                assert!(
+                    msg.contains("both"),
+                    "error message should mention 'both', got: {msg}",
+                );
+                assert!(
+                    msg.contains("REGISTRY_USER"),
+                    "error message should mention REGISTRY_USER, got: {msg}",
+                );
+                assert!(
+                    msg.contains("REGISTRY_PASSWORD"),
+                    "error message should mention REGISTRY_PASSWORD, got: {msg}",
+                );
+            },
+            other => panic!("expected Auth error, got: {other:?}"),
         }
     }
 
@@ -310,58 +332,6 @@ mod tests {
             Some("registry.example.com".to_owned()),
         );
         assert_eq!(r.registry_url.as_deref(), Some("registry.example.com"),);
-    }
-
-    #[tokio::test]
-    async fn authenticate_error_only_user_contains_both() {
-        let _guard_user = EnvGuard::set("REGISTRY_USER", "alice");
-        let _guard_pass = EnvGuard::remove("REGISTRY_PASSWORD");
-
-        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
-        let err = r.authenticate().await.unwrap_err();
-        match err {
-            RegistryError::Auth(msg) => {
-                assert!(
-                    msg.contains("both"),
-                    "error message should mention 'both', got: {msg}",
-                );
-                assert!(
-                    msg.contains("REGISTRY_USER"),
-                    "error message should mention REGISTRY_USER, got: {msg}",
-                );
-                assert!(
-                    msg.contains("REGISTRY_PASSWORD"),
-                    "error message should mention REGISTRY_PASSWORD, got: {msg}",
-                );
-            },
-            other => panic!("expected Auth error, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn authenticate_error_only_password_contains_both() {
-        let _guard_user = EnvGuard::remove("REGISTRY_USER");
-        let _guard_pass = EnvGuard::set("REGISTRY_PASSWORD", "secret");
-
-        let r = OciRegistry::new("unix:///var/run/docker.sock".to_owned(), None);
-        let err = r.authenticate().await.unwrap_err();
-        match err {
-            RegistryError::Auth(msg) => {
-                assert!(
-                    msg.contains("both"),
-                    "error message should mention 'both', got: {msg}",
-                );
-                assert!(
-                    msg.contains("REGISTRY_USER"),
-                    "error message should mention REGISTRY_USER, got: {msg}",
-                );
-                assert!(
-                    msg.contains("REGISTRY_PASSWORD"),
-                    "error message should mention REGISTRY_PASSWORD, got: {msg}",
-                );
-            },
-            other => panic!("expected Auth error, got: {other:?}"),
-        }
     }
 
     #[test]
