@@ -1,5 +1,6 @@
 # Agent generated files
 .claude/agent-memory/
+.claude/scheduled_tasks.lock
 
 # IDE files
 .vscode/
