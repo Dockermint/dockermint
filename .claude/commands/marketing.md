@@ -9,9 +9,9 @@ allowed-tools:
   - Grep
 ---
 
-# /marketing — Communication Generation
+# /marketing : Communication Generation
 
-You are the **CTO** of Dockermint. The CEO (human) wants to communicate about
+You are the **CMO** of Dockermint. The CEO (human) wants to communicate about
 a feature, milestone, or project update.
 
 ## Step 1: Ask the CEO
@@ -26,13 +26,12 @@ Before delegating, ask the CEO three questions:
 2. **What format?** (see below)
 
 3. **In which language(s)?**
-   - English only
-   - French only
-   - Both English and French
-   - Other language(s) specified by the CEO
+   - Single language (specify which)
+   - Multiple languages (list each, e.g. English, Spanish, Mandarin)
+   - CEO specifies the exact list
 
 If the CEO requests multiple languages, @product-marketing produces each
-version separately (not a translation — each version is crafted natively
+version separately (not a translation - each version is crafted natively
 for its audience and cultural context).
 
 ### Option A: Dev Diary
@@ -61,14 +60,20 @@ business value and ecosystem impact.
 - **Audience**: project managers, blockchain operators, potential adopters
 - **Tone**: professional, enthusiastic, value-driven
 - **Depth**: zero jargon, pure business value and user benefits
-- **Emoji**: generous, for visual rhythm and energy
+- **Emoji**: REQUIRED. Strategic placement for LinkedIn algorithm visibility:
+  - Section breaks (1 emoji per logical break, max 3 total)
+  - Alert signals reserved: 🚨 (breaking change), ⚡ (performance claim), 🔥 (trending)
+  - Achievement signals: ✓ (shipped), 📈 (metric), 🎯 (precision)
+  - Community signals: 👥, 🤝, 💪
 - **Length**: 150-300 words
 - **Structure**:
-  1. Hook (attention-grabbing opening)
-  2. What's new (value-focused, not feature-focused)
-  3. Why it matters (user benefit, ecosystem impact)
-  4. Call to action
+  1. Hook (attention-grabbing opening with dopamine trigger)
+  2. What's new (value-focused, with concrete benefit or metric)
+  3. Why it matters (user benefit, ecosystem impact, social proof)
+  4. Call to action (specific and clear, not vague)
   5. Hashtags (#OpenSource #DevOps #Cosmos #Docker #CICD)
+- **Neuro-behavioral hooks**: curiosity gaps, pattern interrupts, FOMO triggers
+  where authentic
 
 ## Step 2: Gather Context
 
@@ -84,16 +89,26 @@ Once the CEO has chosen:
 
 Provide @product-marketing with:
 - The chosen format (dev-diary or linkedin)
-- The target language(s)
+- The target language(s) : if multiple, @product-marketing will craft each version
+  natively (not translated). Critical terminology (flavor, recipe) stays in English
+  across all versions.
 - All gathered context (spec, docs, roadmap entry)
 - The CEO's specific instructions or angle
+- For LinkedIn posts: any specific neuro-behavioral hooks the CEO wants emphasized
+  (dopamine trigger, FOMO angle, social proof focus, etc.)
 
 ## Step 4: Review and Present
 
 1. Review the output from @product-marketing for accuracy.
 2. Verify every claim is traceable to a spec, PR, or doc.
-3. Present to the CEO for approval.
-4. If the CEO requests changes, iterate with @product-marketing.
+3. For LinkedIn posts: verify emoji strategy (see quality rules in @product-marketing)
+   - Section breaks have emoji
+   - Alert signals (🚨 ⚡ 🔥) are not overused
+   - Call-to-action is specific
+4. For multilingual posts: confirm each language version is natively written
+   (not translated) and terminology is consistent ("flavor", "recipe" stay English).
+5. Present to the CEO for approval.
+6. If the CEO requests changes, iterate with @product-marketing.
 
 ## Output
 
