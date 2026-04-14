@@ -8,7 +8,7 @@ Last updated: 2026-04-13 (Rust recipe builder added to Phase 0 + Phase 1)
 
 > Define architecture specs and design each feature module before any implementation begins.
 
-- **Target**: v0.1.0
+- **Target**: N/A
 - **Dependencies**: none
 
 ### Specs
@@ -36,7 +36,7 @@ Last updated: 2026-04-13 (Rust recipe builder added to Phase 0 + Phase 1)
 
 > First runnable mode -- one-shot CLI builds for supported chains with local and remote Docker/BuildKit support.
 
-- **Target**: v0.2.0
+- **Target**: v0.1.0
 - **Priority**: P0
 - **Dependencies**: Phase 0 (all specs confirmed)
 
@@ -73,7 +73,7 @@ Last updated: 2026-04-13 (Rust recipe builder added to Phase 0 + Phase 1)
 
 > Daemon mode with continuous polling, build persistence, metrics, and notifications.
 
-- **Target**: v0.3.0
+- **Target**: v0.2.0
 - **Priority**: P1
 - **Dependencies**: Phase 1
 
@@ -91,7 +91,7 @@ Last updated: 2026-04-13 (Rust recipe builder added to Phase 0 + Phase 1)
 
 > gRPC server mode for the daemon and authenticated CLI client connectivity.
 
-- **Target**: v0.4.0
+- **Target**: v0.3.0
 - **Priority**: P1
 - **Dependencies**: Phase 2
 
