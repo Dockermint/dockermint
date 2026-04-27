@@ -19,7 +19,7 @@ Last updated: 2026-04-13 (Rust recipe builder added to Phase 0 + Phase 1)
 - [x] Structured logging with rotation -- `docs/specs/logger.md`
 - [x] System requirements checker -- `docs/specs/checker.md`
 - [x] Recipe parsing and flavor resolution -- `docs/specs/recipe.md`
-- [x] VCS client (GitHub) and tag/release scraping -- `docs/specs/scrapper.md`
+- [x] VCS client (GitHub) and tag/release scraping -- `docs/specs/scraper.md`
 - [x] Dockerfile generation and template engine -- `docs/specs/builder.md`
 - [x] BuildKit cross-compilation manager -- `docs/specs/builder.md`
 - [x] Go recipe builder -- `docs/specs/builder.md`
