@@ -63,7 +63,7 @@ tag/release scraping -- scrapper" (docs/ROADMAP.md)
 ### Module placement
 
 ```
-src/scrapper/
+src/scraper/
     mod.rs              -- VcsClient trait definition + feature-gated re-exports
     error.rs            -- VcsError enum (thiserror)
     types.rs            -- VersionInfo, TagFilter, FetchOptions, CloneOptions structs
