@@ -2,7 +2,7 @@
 
 ## Context
 
-The `scrapper` module is the VCS integration layer of the Dockermint pipeline.
+The `scraper` module is the VCS integration layer of the Dockermint pipeline.
 It sits between recipe/flavor resolution (step 4) and the builder (step 6) in
 the core build pipeline (see architecture-overview.md, Section 1.2, steps 5).
 
