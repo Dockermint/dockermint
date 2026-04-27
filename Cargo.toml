@@ -33,4 +33,4 @@ openssl-vendored = ["openssl/vendored"]
 
 [dependencies]
 # TLS / SSL — optional, activated via the openssl-vendored feature gate.
-openssl = { version = "=0.10.77", optional = true }
+openssl = { version = "=0.10.78", optional = true }
